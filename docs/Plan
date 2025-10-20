@@ -1,0 +1,36 @@
+WEEK 1-2: Build Annotation Infrastructure
+├─ Excel/Sheets template with validation
+├─ Python validation scripts
+├─ Inter-annotator agreement calculator
+├─ Progress tracking dashboard
+└─ START ANNOTATION (3-4 annotators begin work)
+
+WEEK 3-6: Build NLP Pipeline (PARALLEL with ongoing annotation)
+├─ Text preprocessing
+├─ Stanford CoreNLP integration  
+├─ Feature extraction
+├─ Test on sample articles
+└─ Refine based on test results
+
+WEEK 7-8: Database Design (PARALLEL with finishing annotation)
+├─ PostgreSQL schema
+├─ Neo4j graph schema
+├─ API specifications
+└─ Sample queries
+
+WEEK 9-12: Machine Learning Models (Annotation COMPLETE)
+├─ Train on full dataset (2,500-3,500 events)
+├─ Hierarchical classifiers
+├─ Entity extraction models
+└─ Model evaluation
+
+WEEK 13-15: System Integration
+├─ End-to-end pipeline
+├─ Knowledge base population
+├─ Q&A system
+└─ Web interface
+
+WEEK 16: Final Evaluation & Thesis
+├─ Comprehensive testing
+├─ Performance analysis
+└─ Thesis writing completion
