@@ -1,0 +1,32 @@
+# NLP Pipeline Configuration
+# Stanford CoreNLP Settings
+stanford_corenlp:
+  path: "./stanford-corenlp-4.5.5" # Path to CoreNLP directory
+  memory: "4g" # Memory allocation
+  timeout: 30000 # Timeout in milliseconds
+  annotators: "tokenize,ssplit,pos,lemma,ner,parse,depparse,coref"
+  language: "en"
+
+# Feature Extraction Settings
+features:
+  use_word_embeddings: true
+  embedding_dim: 300
+  use_sentence_embeddings: true
+  context_window: 5
+
+# Domain Resources
+domain:
+  violence_lexicon_path: "./resources/violence_lexicon.txt"
+  actor_database_path: "./resources/actors.json"
+  location_database_path: "./resources/african_locations.json"
+
+# Processing Settings
+processing:
+  batch_size: 10
+  max_sentence_length: 512
+  min_sentence_length: 5
+
+# Logging
+logging:
+  level: "INFO"
+  file: "./logs/nlp_pipeline.log"

@@ -1,0 +1,23 @@
+[
+  {
+    "id": "ART_001",
+    "text": "Armed militants killed 15 civilians in Maiduguri, Nigeria on Tuesday.",
+    "url": "https://example.com/1",
+    "source": "Reuters",
+    "publication_date": "2024-03-20"
+  },
+  {
+    "id": "ART_002",
+    "text": "Al-Shabaab attacked a military base in Mogadishu, killing 8 soldiers.",
+    "url": "https://example.com/2",
+    "source": "AFP",
+    "publication_date": "2024-03-21"
+  },
+  {
+    "id": "ART_003",
+    "text": "Police shot protesters in Harare, Zimbabwe, killing at least 6 people.",
+    "url": "https://example.com/3",
+    "source": "BBC",
+    "publication_date": "2024-03-22"
+  }
+]
