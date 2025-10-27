@@ -3,7 +3,7 @@
 import unittest
 from features.lexical_features import LexicalFeatureExtractor
 from features.syntactic_features import SyntacticFeatureExtractor
-from domain_specific.violence_lexicon import ViolenceLexicon
+from domain.violence_lexicon import ViolenceLexicon
 
 class TestFeatureExtractionIntegration(unittest.TestCase):
     """Test integration of feature extraction components."""

@@ -497,8 +497,8 @@ class IntegratedPipeline:
         # Import components (would normally be at top)
         from pipeline import ViolentEventNLPPipeline
         from event_extraction import EventExtractor
-        from domain_specific.violence_lexicon import ViolenceLexicon
-        from domain_specific.african_ner import AfricanNER
+        from domain.violence_lexicon import ViolenceLexicon
+        from domain.african_ner import AfricanNER
         
         # Initialize NLP pipeline
         self.logger.info("Initializing NLP pipeline...")

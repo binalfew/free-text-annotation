@@ -7,8 +7,8 @@ import os
 from unittest.mock import Mock, patch
 from pipeline import ViolentEventNLPPipeline
 from batch_processing import BatchProcessor, AnnotationFormatter
-from domain_specific.violence_lexicon import ViolenceLexicon
-from domain_specific.african_ner import AfricanNER
+from domain.violence_lexicon import ViolenceLexicon
+from domain.african_ner import AfricanNER
 
 class TestPerformanceBenchmarks(unittest.TestCase):
     """Test performance benchmarks for the NLP pipeline."""

@@ -8,8 +8,8 @@ from preprocessing.sentence_splitter import SentenceSplitter
 from stanford_nlp.corenlp_wrapper import CoreNLPWrapper
 from features.lexical_features import LexicalFeatureExtractor
 from features.syntactic_features import SyntacticFeatureExtractor
-from domain_specific.violence_lexicon import ViolenceLexicon
-from domain_specific.african_ner import AfricanNER
+from domain.violence_lexicon import ViolenceLexicon
+from domain.african_ner import AfricanNER
 
 class ViolentEventNLPPipeline:
     """

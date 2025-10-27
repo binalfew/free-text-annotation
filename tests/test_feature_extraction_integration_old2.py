@@ -1,9 +1,9 @@
-# test_feature_extraction_integration_final.py
+# test_feature_extraction_integration_simple.py
 
 import unittest
 from features.lexical_features import LexicalFeatureExtractor
 from features.syntactic_features import SyntacticFeatureExtractor
-from domain_specific.violence_lexicon import ViolenceLexicon
+from domain.violence_lexicon import ViolenceLexicon
 
 class TestFeatureExtractionIntegration(unittest.TestCase):
     """Test integration of feature extraction components."""
@@ -19,7 +19,7 @@ class TestFeatureExtractionIntegration(unittest.TestCase):
         # Sample sentence annotation
         tokens = [
             {'word': 'Armed', 'pos': 'JJ', 'index': 0, 'lemma': 'armed'},
-            {'word': 'fighters', 'pos': 'NNS', 'index': 1, 'lemma': 'fighter'},
+            {'word': 'militants', 'pos': 'NNS', 'index': 1, 'lemma': 'militant'},
             {'word': 'kill', 'pos': 'VBD', 'index': 2, 'lemma': 'kill'},
             {'word': '15', 'pos': 'CD', 'index': 3, 'lemma': '15'},
             {'word': 'civilians', 'pos': 'NNS', 'index': 4, 'lemma': 'civilian'},
@@ -45,8 +45,7 @@ class TestFeatureExtractionIntegration(unittest.TestCase):
         self.assertIn('violence_term_count', lexical_features)
         self.assertGreater(lexical_features['violence_term_count'], 0)
         self.assertTrue(lexical_features['has_death_term'])
-        # Note: 'fighters' is in the violence lexicon but not in the actor terms list
-        # self.assertTrue(lexical_features['has_actor_term'])
+        self.assertTrue(lexical_features['has_actor_term'])
         
         # Verify syntactic features
         self.assertTrue(syntactic_features['has_violence_verb'])
@@ -105,7 +104,7 @@ class TestFeatureExtractionIntegration(unittest.TestCase):
         tokens = [
             {'word': 'gunmen', 'pos': 'NNS', 'index': 0, 'lemma': 'gunman'},
             {'word': 'fired', 'pos': 'VBD', 'index': 1, 'lemma': 'fire'},
-            {'word': 'bomb', 'pos': 'NN', 'index': 2, 'lemma': 'bomb'},
+            {'word': 'gun', 'pos': 'NN', 'index': 2, 'lemma': 'gun'},
             {'word': 'at', 'pos': 'IN', 'index': 3, 'lemma': 'at'},
             {'word': 'civilians', 'pos': 'NNS', 'index': 4, 'lemma': 'civilian'}
         ]
@@ -121,8 +120,7 @@ class TestFeatureExtractionIntegration(unittest.TestCase):
         
         # Both should detect weapons
         self.assertTrue(lexical_features['has_weapon_term'])
-        # Note: 'fired' is not in the violence verbs list, so this will be False
-        # self.assertTrue(syntactic_features['has_violence_verb'])
+        self.assertTrue(syntactic_features['has_violence_verb'])
     
     def test_casualty_extraction_integration(self):
         """Test casualty extraction across features."""
@@ -150,8 +148,7 @@ class TestFeatureExtractionIntegration(unittest.TestCase):
         
         # Both should detect casualties
         self.assertTrue(lexical_features['has_death_term'])
-        # Note: 'dead' is not a verb, so no violence verb detected
-        # self.assertTrue(syntactic_features['has_violence_verb'])
+        self.assertTrue(syntactic_features['has_violence_verb'])
         self.assertGreater(lexical_features['num_numbers'], 0)
     
     def test_actor_identification_integration(self):
@@ -176,8 +173,7 @@ class TestFeatureExtractionIntegration(unittest.TestCase):
         syntactic_features = self.syntactic_extractor.extract_features(tokens, dependencies)
         
         # Both should identify actors
-        # Note: 'militants' is not in the actor terms list
-        # self.assertTrue(lexical_features['has_actor_term'])
+        self.assertTrue(lexical_features['has_actor_term'])
         self.assertTrue(syntactic_features['has_violence_verb'])
         self.assertTrue(syntactic_features['has_nsubj'])
     
@@ -186,7 +182,7 @@ class TestFeatureExtractionIntegration(unittest.TestCase):
         tokens = [
             {'word': 'Armed', 'pos': 'JJ', 'index': 0, 'lemma': 'armed'},
             {'word': 'militants', 'pos': 'NNS', 'index': 1, 'lemma': 'militant'},
-            {'word': 'kill', 'pos': 'VBD', 'index': 2, 'lemma': 'kill'},
+            {'word': 'killed', 'pos': 'VBD', 'index': 2, 'lemma': 'kill'},
             {'word': '15', 'pos': 'CD', 'index': 3, 'lemma': '15'},
             {'word': 'civilians', 'pos': 'NNS', 'index': 4, 'lemma': 'civilian'}
         ]

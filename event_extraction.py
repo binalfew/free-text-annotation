@@ -218,73 +218,187 @@ class FiveW1HExtractor:
     def _extract_who(self, trigger: Dict, sent_ann: Dict) -> Optional[Dict]:
         """
         Extract actor (Who did it).
-        
-        Strategy: Look for subject of violence verb
+
+        Strategy: Look for subject of violence verb using multiple approaches
         """
-        dependencies = sent_ann.get('basicDependencies', [])
+        dependencies = sent_ann.get('dependencies', sent_ann.get('basicDependencies', []))
         tokens = sent_ann.get('tokens', [])
         entities = sent_ann.get('entities', [])
-        
-        trigger_idx = trigger['index']
-        
-        # Find subject dependency
+        text = sent_ann.get('text', '')
+
+        trigger_idx = trigger['sentence_index']  # Use sentence_index from trigger
+
+        # Approach 1: Find subject dependency (nsubj, nsubjpass, agent)
         actor_idx = None
         for dep in dependencies:
-            if dep.get('governor') == trigger_idx + 1:  # CoreNLP uses 1-indexed
-                if dep.get('dep') in ['nsubj', 'nsubjpass', 'agent']:
-                    actor_idx = dep.get('dependent') - 1  # Convert to 0-indexed
+            gov = dep.get('governor')
+            dep_type = dep.get('dep', '')
+
+            # Match against trigger position (both 0-indexed and 1-indexed)
+            if gov == trigger_idx + 1 or gov == trigger_idx:
+                if dep_type in ['nsubj', 'nsubjpass', 'agent', 'csubj']:
+                    actor_idx = dep.get('dependent')
+                    # Normalize to 0-indexed
+                    if actor_idx > 0:
+                        actor_idx = actor_idx - 1
                     break
-        
-        if actor_idx is not None:
-            # Extract actor span
+
+        # Approach 2: Look for ORGANIZATION or PERSON entities before trigger
+        if actor_idx is None:
+            for entity in entities:
+                if entity.get('type') in ['ORGANIZATION', 'PERSON']:
+                    # Check if entity appears before trigger in sentence
+                    entity_text = entity.get('text', '')
+                    if entity_text and entity_text in text:
+                        entity_pos = text.find(entity_text)
+                        trigger_pos = text.find(trigger['word'])
+                        if entity_pos < trigger_pos and trigger_pos - entity_pos < 100:
+                            return {
+                                'text': entity_text,
+                                'type': entity.get('subtype', entity.get('type')),
+                                'metadata': entity.get('metadata', {})
+                            }
+
+        # Approach 3: Extract from dependencies
+        if actor_idx is not None and 0 <= actor_idx < len(tokens):
+            # Extract actor span with modifiers
             actor_span = self._extract_noun_phrase(actor_idx, dependencies, tokens)
-            
-            # Check if it's a known organization
+
+            # Build actor text
             actor_text = ' '.join([tokens[i]['word'] for i in actor_span])
-            actor_metadata = self._identify_actor(actor_text, entities)
-            
+
+            # Identify actor type
+            actor_type = self._identify_actor(actor_text, entities)
+
             return {
                 'text': actor_text,
-                'tokens': actor_span,
-                'metadata': actor_metadata
+                'type': actor_type.get('type', 'unknown'),
+                'metadata': actor_type
             }
-        
+
+        # Approach 4: Pattern-based extraction for common actor patterns
+        # Look for patterns like "X killed/attacked" where X is a noun phrase
+        if trigger_idx > 0:
+            # Check tokens before trigger
+            for i in range(max(0, trigger_idx - 5), trigger_idx):
+                token = tokens[i]
+                pos = token.get('pos', '')
+                # Look for noun phrases (NNP, NNPS, NN, NNS)
+                if pos.startswith('NN'):
+                    actor_span = self._extract_noun_phrase(i, dependencies, tokens)
+                    actor_text = ' '.join([tokens[idx]['word'] for idx in actor_span])
+
+                    # Verify this looks like an actor (not just any noun)
+                    if self._is_likely_actor(actor_text):
+                        actor_type = self._identify_actor(actor_text, entities)
+                        return {
+                            'text': actor_text,
+                            'type': actor_type.get('type', 'unknown'),
+                            'metadata': actor_type
+                        }
+
         return None
     
     def _extract_whom(self, trigger: Dict, sent_ann: Dict) -> Optional[Dict]:
         """
         Extract victim (Whom it affected).
-        
-        Strategy: Look for object of violence verb
+
+        Strategy: Look for object of violence verb and casualty mentions
         """
-        dependencies = sent_ann.get('basicDependencies', [])
+        dependencies = sent_ann.get('dependencies', sent_ann.get('basicDependencies', []))
         tokens = sent_ann.get('tokens', [])
-        
-        trigger_idx = trigger['index']
-        
-        # Find object dependency
+        text = sent_ann.get('text', '')
+        entities = sent_ann.get('entities', [])
+
+        trigger_idx = trigger['sentence_index']
+
+        # Approach 1: Find object dependency (dobj, nmod, obl, iobj)
         victim_idx = None
         for dep in dependencies:
-            if dep.get('governor') == trigger_idx + 1:
-                if dep.get('dep') in ['dobj', 'nmod', 'obl']:
-                    victim_idx = dep.get('dependent') - 1
-                    break
-        
-        if victim_idx is not None:
+            gov = dep.get('governor')
+            dep_type = dep.get('dep', '')
+
+            # Match against trigger position
+            if gov == trigger_idx + 1 or gov == trigger_idx:
+                if dep_type in ['dobj', 'nmod', 'obl', 'iobj', 'nmod:poss', 'obl:tmod']:
+                    victim_idx = dep.get('dependent')
+                    # Normalize to 0-indexed
+                    if victim_idx > 0:
+                        victim_idx = victim_idx - 1
+
+                    # Make sure it's not a location or temporal expression
+                    if 0 <= victim_idx < len(tokens):
+                        token = tokens[victim_idx]
+                        if not token.get('ner', '') in ['LOCATION', 'DATE', 'TIME']:
+                            break
+                    victim_idx = None
+
+        # Approach 2: Extract from dependencies
+        if victim_idx is not None and 0 <= victim_idx < len(tokens):
             victim_span = self._extract_noun_phrase(victim_idx, dependencies, tokens)
             victim_text = ' '.join([tokens[i]['word'] for i in victim_span])
-            
-            # Extract casualty numbers if present
-            casualties = self._extract_casualties(victim_text, tokens, victim_span)
-            
+
+            # Extract casualty numbers from full sentence context
+            casualties = self._extract_casualties_from_sentence(text)
+
             return {
                 'text': victim_text,
-                'tokens': victim_span,
                 'deaths': casualties.get('deaths'),
                 'injuries': casualties.get('injuries'),
                 'type': self._classify_victim_type(victim_text)
             }
-        
+
+        # Approach 3: Look for casualty patterns in full sentence
+        # Even if we can't find direct object, extract casualties
+        casualties = self._extract_casualties_from_sentence(text)
+
+        if casualties.get('deaths') or casualties.get('injuries'):
+            # Try to find victim noun in sentence
+            victim_text = self._extract_victim_from_casualty_pattern(text)
+
+            return {
+                'text': victim_text if victim_text else 'casualties',
+                'deaths': casualties.get('deaths'),
+                'injuries': casualties.get('injuries'),
+                'type': self._classify_victim_type(victim_text) if victim_text else 'unknown'
+            }
+
+        # Approach 4: Look for PERSON entities after trigger (named victims)
+        for entity in entities:
+            if entity.get('type') == 'PERSON':
+                entity_text = entity.get('text', '')
+                if entity_text and entity_text in text:
+                    entity_pos = text.find(entity_text)
+                    trigger_pos = text.find(trigger['word'])
+                    if entity_pos > trigger_pos:
+                        casualties = self._extract_casualties_from_sentence(text)
+                        return {
+                            'text': entity_text,
+                            'deaths': casualties.get('deaths'),
+                            'injuries': casualties.get('injuries'),
+                            'type': 'civilian',
+                            'named_victim': True
+                        }
+
+        # Approach 5: Search for victim indicators in sentence even without direct object
+        victim_indicators = ['civilian', 'civilians', 'people', 'persons', 'resident', 'residents',
+                            'villager', 'villagers', 'student', 'students', 'child', 'children',
+                            'woman', 'women', 'man', 'men', 'guard', 'officer', 'officers']
+
+        for indicator in victim_indicators:
+            if indicator in text.lower():
+                casualties = self._extract_casualties_from_sentence(text)
+                if casualties.get('deaths') or casualties.get('injuries'):
+                    # Found casualties with victim type
+                    victim_type = 'combatant' if indicator in ['officer', 'officers', 'soldier', 'soldiers', 'guard'] else 'civilian'
+                    return {
+                        'text': indicator,
+                        'deaths': casualties.get('deaths'),
+                        'injuries': casualties.get('injuries'),
+                        'type': victim_type,
+                        'inferred': True
+                    }
+
         return None
     
     def _extract_where(self, sent_ann: Dict) -> Optional[Dict]:
@@ -366,67 +480,244 @@ class FiveW1HExtractor:
     def _extract_how(self, trigger: Dict, sent_ann: Dict) -> Optional[Dict]:
         """
         Extract method/weapon (How it was done).
-        
+
         Strategy: Look for weapon mentions and tactical descriptions
         """
         tokens = sent_ann.get('tokens', [])
-        
-        # Weapon keywords
+        text = sent_ann.get('text', '')
+
+        # Expanded weapon keywords
         weapons = {
-            'gun', 'rifle', 'pistol', 'firearm', 'ak-47',
-            'bomb', 'explosive', 'ied', 'grenade',
-            'knife', 'machete', 'blade'
+            # Firearms
+            'gun', 'rifle', 'rifles', 'pistol', 'pistols', 'firearm', 'firearms',
+            'ak-47', 'ak47', 'kalashnikov', 'm16', 'weapon', 'weapons',
+            # Explosives
+            'bomb', 'bombs', 'explosive', 'explosives', 'ied', 'grenade', 'grenades',
+            'rocket', 'rpg', 'mortar', 'mine', 'mines',
+            # Edged weapons
+            'knife', 'knives', 'machete', 'machetes', 'blade', 'sword', 'spear', 'spears',
+            # Other
+            'ammunition', 'bullet', 'bullets', 'shell', 'device'
         }
-        
-        # Tactical keywords
+
+        # Expanded tactical keywords
         tactics = {
-            'ambush', 'raid', 'assault', 'attack',
-            'suicide', 'car-bomb', 'roadside'
+            'ambush', 'raid', 'assault', 'attack', 'attacks',
+            'suicide', 'car-bomb', 'roadside', 'ied',
+            'stormed', 'storm'
         }
-        
+
         found_weapons = []
         found_tactics = []
-        
+
+        # Search in tokens
         for token in tokens:
+            word_lower = token.get('word', '').lower()
             lemma = token.get('lemma', '').lower()
-            if lemma in weapons:
-                found_weapons.append(token['word'])
-            if lemma in tactics:
-                found_tactics.append(token['word'])
-        
+
+            if lemma in weapons or word_lower in weapons:
+                found_weapons.append(token['word'].lower())
+            if lemma in tactics or word_lower in tactics:
+                found_tactics.append(token['word'].lower())
+
+        # Also search text for multi-word weapons
+        text_lower = text.lower()
+        multi_word_weapons = {
+            'live ammunition': 'live ammunition',
+            'tear gas': 'tear gas',
+            'rubber bullets': 'rubber bullets',
+            'molotov cocktail': 'Molotov cocktail',
+            'improvised explosive': 'improvised explosive',
+            'explosive device': 'explosive device',
+            'suicide bomb': 'suicide bomb',
+            'car bomb': 'car bomb'
+        }
+
+        for pattern, weapon_name in multi_word_weapons.items():
+            if pattern in text_lower:
+                found_weapons.append(weapon_name)
+
+        # Deduplicate and clean
+        found_weapons = list(set(found_weapons))
+        found_tactics = list(set(found_tactics))
+
         if found_weapons or found_tactics:
             return {
                 'weapons': found_weapons,
                 'tactics': found_tactics,
                 'text': ', '.join(found_weapons + found_tactics)
             }
-        
+
         # Fallback: infer from trigger
         trigger_lemma = trigger['lemma']
-        if 'bomb' in trigger_lemma or 'explode' in trigger_lemma:
-            return {'weapons': ['explosives'], 'tactics': [], 'text': 'explosives (inferred)'}
-        elif 'shoot' in trigger_lemma:
-            return {'weapons': ['firearms'], 'tactics': [], 'text': 'firearms (inferred)'}
-        
+        if 'bomb' in trigger_lemma or 'explode' in trigger_lemma or 'detonate' in trigger_lemma:
+            return {'weapons': ['explosive'], 'tactics': [], 'text': 'explosive'}
+        elif 'shoot' in trigger_lemma or 'fire' in trigger_lemma or 'gun' in trigger_lemma:
+            return {'weapons': ['firearms'], 'tactics': [], 'text': 'firearms'}
+        elif 'suicide' in text_lower:
+            return {'weapons': ['explosive'], 'tactics': ['suicide'], 'text': 'explosive, suicide'}
+
         return None
     
-    def _extract_noun_phrase(self, head_idx: int, dependencies: List[Dict], 
+    def _is_likely_actor(self, text: str) -> bool:
+        """Check if text looks like an actor/perpetrator."""
+        text_lower = text.lower()
+
+        # Known actor indicators
+        actor_keywords = {
+            'group', 'force', 'forces', 'army', 'military', 'police', 'officer', 'officers',
+            'soldier', 'soldiers', 'troop', 'troops', 'militant', 'militants', 'fighter', 'fighters',
+            'rebel', 'rebels', 'insurgent', 'insurgents', 'terrorist', 'terrorists',
+            'gang', 'gunman', 'gunmen', 'attacker', 'attackers', 'bomber',
+            'shabaab', 'boko', 'haram', 'aqim', 'isis'
+        }
+
+        return any(keyword in text_lower for keyword in actor_keywords)
+
+    def _extract_victim_from_casualty_pattern(self, text: str) -> Optional[str]:
+        """Extract victim type from casualty patterns in text."""
+        text_lower = text.lower()
+
+        # Patterns like "killing 15 civilians", "15 people killed"
+        patterns = [
+            r'(?:killing|killed|kill)\s+(?:at least\s+)?(?:\d+\s+)?(\w+)',
+            r'(\d+\s+\w+)\s+(?:killed|dead|died)',
+            r'(?:death|deaths)\s+of\s+(?:\d+\s+)?(\w+)',
+            r'(\w+)\s+(?:and\s+\w+\s+)?(?:killed|dead|died)'
+        ]
+
+        victim_words = {'civilian', 'civilians', 'people', 'person', 'persons', 'resident',
+                       'residents', 'villager', 'villagers', 'student', 'students',
+                       'child', 'children', 'woman', 'women', 'man', 'men'}
+
+        for pattern in patterns:
+            match = re.search(pattern, text_lower)
+            if match:
+                potential_victim = match.group(1).strip()
+                # Check if it's actually a victim word
+                for victim_word in victim_words:
+                    if victim_word in potential_victim:
+                        return potential_victim
+
+        return None
+
+    def _extract_casualties_from_sentence(self, text: str) -> Dict:
+        """
+        Extract casualty numbers from full sentence text.
+
+        This is more robust than the old method as it searches the full sentence.
+        """
+        casualties = {'deaths': None, 'injuries': None}
+        text_lower = text.lower()
+
+        # CRITICAL FIX: Exclude ages (e.g., "22-year-old") from casualty extraction
+        # Remove age patterns before extracting casualties
+        age_pattern = r'\d+-year-old'
+        text_lower_no_ages = re.sub(age_pattern, 'PERSON', text_lower)
+
+        # Enhanced death patterns - now work on text without ages
+        death_patterns = [
+            r'killing\s+(?:at least\s+)?(\d+)',
+            r'killed\s+(?:at least\s+)?(\d+)',
+            r'(\d+)\s+(?:people|persons|civilians|soldiers|residents|villagers|students)\s*(?:were\s+)?(?:killed|dead|died)',
+            r'death\s+of\s+(?:the\s+)?(\d+)',
+            r'(\d+)\s+(?:killed|dead|died)',
+            r'(\d+)\s+(?:have\s+)?died',
+            r'left\s+(\d+)\s+(?:people\s+)?dead',
+            r'(\d+)\s+people\s+dead',
+            r'toll\s+of\s+(\d+)',
+            r'(\d+)\s+deaths?'
+        ]
+
+        # Try each pattern on text without ages
+        for pattern in death_patterns:
+            match = re.search(pattern, text_lower_no_ages)
+            if match:
+                try:
+                    num = int(match.group(1))
+                    # Sanity check: casualty numbers should be reasonable (< 10000)
+                    if num > 0 and num < 10000:
+                        casualties['deaths'] = num
+                        break
+                except (ValueError, IndexError):
+                    pass
+
+        # Enhanced injury patterns
+        injury_patterns = [
+            r'injuring\s+(?:at least\s+)?(\d+)',
+            r'injured\s+(?:at least\s+)?(\d+)',
+            r'(\d+)\s+(?:people|persons|civilians|soldiers|others)\s*(?:were\s+)?(?:injured|wounded|hurt)',
+            r'(\d+)\s+(?:injured|wounded|hurt)',
+            r'(\d+)\s+(?:have\s+been\s+)?(?:injured|wounded)',
+            r'(\d+)\s+others?\s+(?:injured|wounded)',
+            r'including\s+(\d+)\s+(?:police\s+)?officers'
+        ]
+
+        for pattern in injury_patterns:
+            match = re.search(pattern, text_lower_no_ages)
+            if match:
+                try:
+                    num = int(match.group(1))
+                    if num > 0 and num < 10000:
+                        casualties['injuries'] = num
+                        break
+                except (ValueError, IndexError):
+                    pass
+
+        # Special case: "X dead and Y injured" pattern
+        combined_pattern = r'(\d+)\s+(?:people\s+)?dead\s+and\s+(\d+)\s+injured'
+        match = re.search(combined_pattern, text_lower_no_ages)
+        if match:
+            try:
+                d = int(match.group(1))
+                i = int(match.group(2))
+                if d > 0 and d < 10000:
+                    casualties['deaths'] = d
+                if i > 0 and i < 10000:
+                    casualties['injuries'] = i
+            except (ValueError, IndexError):
+                pass
+
+        # Special case: "X people dead, Y injured" or similar variations
+        alt_combined = r'(\d+)\s+(?:people|persons)\s+(?:dead|killed).*?(\d+)\s+injured'
+        match = re.search(alt_combined, text_lower_no_ages)
+        if match and not casualties['deaths']:  # Only if not already found
+            try:
+                d = int(match.group(1))
+                i = int(match.group(2))
+                if d > 0 and d < 10000:
+                    casualties['deaths'] = d
+                if i > 0 and i < 10000:
+                    casualties['injuries'] = i
+            except (ValueError, IndexError):
+                pass
+
+        return casualties
+
+    def _extract_noun_phrase(self, head_idx: int, dependencies: List[Dict],
                            tokens: List[Dict]) -> List[int]:
         """
         Extract complete noun phrase starting from head.
-        
+
         Returns:
             List of token indices in the phrase
         """
         phrase_indices = {head_idx}
-        
-        # Add modifiers
+
+        # Add modifiers - look for dependencies where head is governor
         for dep in dependencies:
-            if dep.get('governor') == head_idx + 1:
+            gov = dep.get('governor')
+            # Try both 1-indexed and 0-indexed
+            if gov == head_idx + 1 or gov == head_idx:
                 dep_type = dep.get('dep', '')
-                if dep_type in ['det', 'amod', 'compound', 'nummod', 'nmod']:
-                    phrase_indices.add(dep.get('dependent') - 1)
-        
+                if dep_type in ['det', 'amod', 'compound', 'nummod', 'nmod', 'case', 'advmod']:
+                    dependent = dep.get('dependent')
+                    # Normalize to 0-indexed
+                    if dependent > 0:
+                        phrase_indices.add(dependent - 1)
+                    else:
+                        phrase_indices.add(dependent)
+
         # Sort indices
         return sorted(list(phrase_indices))
     
@@ -552,28 +843,35 @@ class EventExtractor:
     def extract_events(self, article_annotation: Dict) -> List[Dict]:
         """
         Extract all events from annotated article.
-        
+
         Args:
             article_annotation: Output from NLP pipeline
-            
+
         Returns:
             List of extracted events with 5W1H
         """
         events = []
-        
+
         sentences = article_annotation.get('sentences', [])
-        
+        article_text = article_annotation.get('cleaned_text', article_annotation.get('original_text', ''))
+
+        # Extract article-level context
+        article_context = self._extract_article_context(article_annotation)
+
         for sent_idx, sentence in enumerate(sentences):
             # Detect triggers
             triggers = self.trigger_detector.detect_triggers(sentence)
-            
+
             if not triggers:
                 continue
-            
+
             # Extract 5W1H for each trigger
             extractions = self.fivew1h_extractor.extract(sentence, triggers)
-            
+
             for extraction in extractions:
+                # Propagate article-level context to incomplete extractions
+                extraction = self._propagate_context(extraction, article_context, sentence)
+
                 event = {
                     'sentence_index': sent_idx,
                     'sentence_text': sentence.get('text', ''),
@@ -586,39 +884,670 @@ class EventExtractor:
                     'how': extraction['how'],
                     'confidence': self._calculate_confidence(extraction)
                 }
-                
+
                 events.append(event)
-        
+
+        # First pass: Merge events within same/adjacent sentences
+        events = self._merge_similar_events(events)
+
+        # Second pass: CLUSTER events across entire article (coreference resolution)
+        events = self._cluster_coreferent_events(events, article_annotation)
+
+        # Third pass: Filter by salience (keep only main newsworthy events, not background context)
+        events = self._filter_by_salience(events, article_annotation)
+
+        # Filter out very low confidence events
+        # Increase threshold to reduce noise
+        events = [e for e in events if e['confidence'] >= 0.30]
+
         return events
     
     def _calculate_confidence(self, extraction: Dict) -> float:
         """
         Calculate confidence score for extraction.
-        
+
         Args:
             extraction: 5W1H extraction
-            
+
         Returns:
             Confidence score 0-1
         """
-        # Score based on completeness
-        components = ['who', 'whom', 'where', 'when', 'how']
-        filled = sum(1 for comp in components if extraction.get(comp) is not None)
-        
-        completeness_score = filled / len(components)
-        
-        # Bonus for confirmed entities
-        entity_bonus = 0.0
+        score = 0.0
+
+        # Critical components (higher weight)
         if extraction.get('who'):
-            if extraction['who'].get('metadata', {}).get('known_group'):
-                entity_bonus += 0.1
-        
+            score += 0.25
+        if extraction.get('whom'):
+            score += 0.25
+            # Bonus if casualties are extracted
+            if extraction['whom'].get('deaths') or extraction['whom'].get('injuries'):
+                score += 0.10
+
+        # Important components (medium weight)
         if extraction.get('where'):
-            if extraction['where'].get('type') != 'INFERRED':
-                entity_bonus += 0.1
-        
-        total_score = min(completeness_score + entity_bonus, 1.0)
-        return round(total_score, 2)
+            score += 0.15
+        if extraction.get('when'):
+            score += 0.10
+
+        # Supporting components (lower weight)
+        if extraction.get('how'):
+            score += 0.10
+
+        # Bonus for specific entity types
+        if extraction.get('who'):
+            actor_type = extraction['who'].get('type', 'unknown')
+            if actor_type != 'unknown':
+                score += 0.05
+
+        # Ensure score is between 0 and 1
+        return round(min(score, 1.0), 2)
+
+    def _extract_article_context(self, article_annotation: Dict) -> Dict:
+        """
+        Extract article-level context (location, time, actors mentioned).
+
+        Args:
+            article_annotation: Full article annotation
+
+        Returns:
+            Dict with article-level context
+        """
+        context = {
+            'locations': [],
+            'dates': [],
+            'organizations': [],
+            'persons': []
+        }
+
+        sentences = article_annotation.get('sentences', [])
+
+        # Collect all entities from article
+        for sentence in sentences:
+            entities = sentence.get('entities', [])
+
+            for entity in entities:
+                entity_type = entity.get('type')
+                entity_text = entity.get('text', '')
+
+                if entity_type == 'LOCATION' and entity_text not in context['locations']:
+                    context['locations'].append({
+                        'text': entity_text,
+                        'type': entity.get('subtype', entity_type),
+                        'metadata': entity.get('metadata', {})
+                    })
+                elif entity_type == 'DATE' and entity_text not in [d['text'] for d in context['dates']]:
+                    context['dates'].append({
+                        'text': entity_text,
+                        'type': 'EXPLICIT'
+                    })
+                elif entity_type == 'ORGANIZATION' and entity_text not in [o['text'] for o in context['organizations']]:
+                    context['organizations'].append({
+                        'text': entity_text,
+                        'type': entity.get('subtype', entity_type),
+                        'metadata': entity.get('metadata', {})
+                    })
+                elif entity_type == 'PERSON' and entity_text not in [p['text'] for p in context['persons']]:
+                    context['persons'].append({
+                        'text': entity_text
+                    })
+
+        return context
+
+    def _propagate_context(self, extraction: Dict, article_context: Dict, sentence: Dict) -> Dict:
+        """
+        Propagate article-level context to extraction if components are missing.
+
+        Args:
+            extraction: Event extraction
+            article_context: Article-level context
+            sentence: Current sentence
+
+        Returns:
+            Enhanced extraction
+        """
+        # Propagate location if missing
+        if not extraction.get('where') and article_context['locations']:
+            # Use the first (usually most prominent) location
+            extraction['where'] = article_context['locations'][0].copy()
+            extraction['where']['type'] = 'INFERRED'
+
+        # Propagate time if missing
+        if not extraction.get('when') and article_context['dates']:
+            extraction['when'] = article_context['dates'][0].copy()
+            extraction['when']['type'] = 'INFERRED'
+
+        # CRITICAL: Propagate actor if missing and article has organizations
+        if not extraction.get('who') and article_context['organizations']:
+            # Try to find an organization that looks like a perpetrator
+            for org in article_context['organizations']:
+                org_text_lower = org['text'].lower()
+                # Check if organization is likely a perpetrator
+                perpetrator_indicators = ['shabaab', 'boko', 'haram', 'aqim', 'isis',
+                                         'militant', 'terrorist', 'rebel', 'insurgent',
+                                         'gang', 'group']
+
+                if any(ind in org_text_lower for ind in perpetrator_indicators):
+                    extraction['who'] = {
+                        'text': org['text'],
+                        'type': org.get('type', 'ORGANIZATION'),
+                        'metadata': org.get('metadata', {}),
+                        'inferred': True  # Mark as inferred from article
+                    }
+                    break
+
+        # If still no actor, try to infer from sentence entities
+        if not extraction.get('who'):
+            entities = sentence.get('entities', [])
+            for entity in entities:
+                if entity.get('type') == 'ORGANIZATION':
+                    # Check if it's mentioned before the trigger
+                    text = sentence.get('text', '')
+                    trigger = extraction.get('trigger', {})
+                    trigger_word = trigger.get('word', '')
+
+                    entity_text = entity.get('text', '')
+                    if entity_text and trigger_word:
+                        entity_pos = text.find(entity_text)
+                        trigger_pos = text.find(trigger_word)
+
+                        if 0 <= entity_pos < trigger_pos:
+                            extraction['who'] = {
+                                'text': entity_text,
+                                'type': entity.get('subtype', entity.get('type')),
+                                'metadata': entity.get('metadata', {}),
+                                'inferred': True
+                            }
+                            break
+
+        return extraction
+
+    def _filter_by_salience(self, events: List[Dict], article_annotation: Dict) -> List[Dict]:
+        """
+        Filter events by salience to keep only main newsworthy events.
+
+        Removes background context and references to other incidents.
+        Uses multiple signals to determine if event is main news vs. background.
+
+        Args:
+            events: List of extracted events
+            article_annotation: Full article annotation
+
+        Returns:
+            Filtered list containing only salient events
+        """
+        if not events:
+            return events
+
+        # Calculate salience score for each event
+        scored_events = []
+        for event in events:
+            score = self._calculate_salience_score(event, article_annotation)
+            scored_events.append((event, score))
+            # Debug logging
+            trigger = event.get('trigger', {})
+            self.logger.debug(f"Salience score for trigger '{trigger.get('word')}' (sent {trigger.get('sentence_index')}): {score}")
+
+        # Sort by salience score (descending)
+        scored_events.sort(key=lambda x: x[1], reverse=True)
+
+        # Keep events above salience threshold
+        # High-salience events are main news (score >= 7)
+        # Low-salience events are background context (score < 7)
+        # INCREASED from 5 to 7 for more aggressive filtering
+        salient_events = []
+        for event, score in scored_events:
+            if score >= 7:
+                salient_events.append(event)
+
+        # If nothing passed threshold, keep only the top event
+        # Most articles report 1 main event
+        if not salient_events and events:
+            salient_events = [e for e, s in scored_events[:1]]
+            self.logger.debug(f"No events passed salience threshold, keeping top 1 event only")
+
+        return salient_events
+
+    def _calculate_salience_score(self, event: Dict, article_annotation: Dict) -> int:
+        """
+        Calculate salience score for an event.
+
+        Higher score = more likely to be main news event
+        Lower score = more likely to be background context
+
+        Signals:
+        - Early in article (+3): First 2 sentences are usually main news
+        - Has casualties (+4): Main events usually report deaths/injuries
+        - Has victim (+2): Specific victims indicate concrete event
+        - High completeness (+2): Main events have more details
+        - High confidence (+2): Main events are clearer
+        - Location matches article context (+2): Main event location in headline/metadata
+        - Past tense trigger (-2): May indicate background/historical context
+        - Conditional/modal context (-3): "would", "could", "might" suggest non-actual event
+
+        Args:
+            event: Event to score
+            article_annotation: Article context
+
+        Returns:
+            Salience score (0-15, higher = more salient)
+        """
+        score = 0
+
+        # Signal 1: Position in article (+3 for first 2 sentences)
+        trigger = event.get('trigger', {})
+        sentence_idx = trigger.get('sentence_index', 999)
+        if sentence_idx <= 2:
+            score += 3
+
+        # Signal 2: Has casualties (+4) - main events report deaths/injuries
+        whom = event.get('whom')
+        if whom:
+            deaths = whom.get('deaths')
+            injuries = whom.get('injuries')
+            if deaths is not None or injuries is not None:
+                score += 4
+
+        # Signal 3: Has specific victim (+2)
+        if whom and whom.get('text'):
+            score += 2
+
+        # Signal 4: High completeness (+2 if >= 80%)
+        completeness = event.get('completeness', 0)
+        if completeness >= 0.8:
+            score += 2
+
+        # Signal 5: High confidence (+2 if >= 0.8)
+        confidence = event.get('confidence', 0)
+        if confidence >= 0.8:
+            score += 2
+
+        # Signal 6: Location matches article location (+2)
+        where = event.get('where')
+        if where:
+            location_text = where.get('text', '').lower()
+            # Check against article title/first sentence
+            sentences = article_annotation.get('sentences', [])
+            if sentences:
+                first_text = sentences[0].get('text', '').lower()
+                if location_text in first_text:
+                    score += 2
+
+        # NEGATIVE SIGNALS
+
+        # Signal 7: Past tense in background context (-2)
+        # Check if trigger is past tense and far from beginning
+        trigger_pos = trigger.get('pos', '')
+        if trigger_pos == 'VBD' and sentence_idx > 3:
+            score -= 1
+
+        # Signal 8: Modal/conditional context (-3)
+        # Check sentence for modal verbs suggesting hypothetical
+        if sentence_idx < len(article_annotation.get('sentences', [])):
+            sentence = article_annotation['sentences'][sentence_idx]
+            text_lower = sentence.get('text', '').lower()
+            modal_indicators = ['would', 'could', 'might', 'may', 'should', 'if', 'in case']
+            if any(modal in text_lower for modal in modal_indicators):
+                score -= 3
+
+        return max(0, score)  # Don't go negative
+
+    def _merge_similar_events(self, events: List[Dict]) -> List[Dict]:
+        """
+        Merge or deduplicate similar events from the same sentence.
+
+        Args:
+            events: List of extracted events
+
+        Returns:
+            Merged/deduplicated event list
+        """
+        if len(events) <= 1:
+            return events
+
+        merged = []
+        used = set()
+
+        for i, event1 in enumerate(events):
+            if i in used:
+                continue
+
+            # Check if this event should be merged with another
+            merged_event = event1.copy()
+            merged_with = []
+
+            for j, event2 in enumerate(events):
+                if j <= i or j in used:
+                    continue
+
+                # Merge criteria: same sentence and related triggers
+                if event1['sentence_index'] == event2['sentence_index']:
+                    if self._should_merge_events(event1, event2):
+                        # Merge event2 into event1
+                        merged_event = self._merge_two_events(merged_event, event2)
+                        used.add(j)
+                        merged_with.append(j)
+
+            merged.append(merged_event)
+            used.add(i)
+
+        return merged
+
+    def _should_merge_events(self, event1: Dict, event2: Dict) -> bool:
+        """
+        Determine if two events should be merged.
+
+        Args:
+            event1, event2: Events to compare
+
+        Returns:
+            True if events should be merged
+        """
+        # AGGRESSIVE MERGING: Merge events from same OR adjacent sentences
+        sentence_diff = abs(event1['sentence_index'] - event2['sentence_index'])
+        if sentence_diff > 2:  # Only merge if within 2 sentences of each other
+            return False
+
+        # Check trigger relationship
+        trigger1 = event1['trigger']['lemma']
+        trigger2 = event2['trigger']['lemma']
+
+        # Related trigger groups - EXPANDED
+        related_groups = [
+            {'kill', 'murder', 'assassinate', 'massacre', 'slay', 'execute', 'death'},
+            {'bomb', 'explode', 'detonate', 'blast', 'explosion', 'bombing'},
+            {'shoot', 'fire', 'gun', 'shot', 'firing', 'shooting'},
+            {'attack', 'assault', 'raid', 'storm', 'ambush', 'strike'},
+            {'injure', 'wound', 'hurt', 'harm', 'injured', 'wounded'},
+            {'kidnap', 'abduct', 'seize', 'capture'},
+            {'destroy', 'burn', 'raze', 'demolish', 'destroyed'}
+        ]
+
+        for group in related_groups:
+            if trigger1 in group and trigger2 in group:
+                return True
+
+        # Check if one is describing the other (e.g., "bombing" and "explosion")
+        describing_pairs = [
+            ('bomb', 'explosion'),
+            ('bombing', 'explosion'),
+            ('detonate', 'explosion'),
+            ('attack', 'killing'),
+            ('attack', 'kill'),
+            ('shoot', 'death'),
+            ('shoot', 'kill'),
+            ('fire', 'kill'),
+            ('detonate', 'blast'),
+            ('injure', 'kill'),  # Often same incident
+            ('destroy', 'attack')
+        ]
+
+        for t1, t2 in describing_pairs:
+            if (trigger1 == t1 and trigger2 == t2) or (trigger1 == t2 and trigger2 == t1):
+                return True
+
+        # AGGRESSIVE: If they share the same location AND casualties, likely same event
+        loc1 = event1.get('where', {})
+        loc2 = event2.get('where', {})
+        if loc1 and loc2 and loc1.get('text') == loc2.get('text'):
+            casualties1 = event1.get('whom', {})
+            casualties2 = event2.get('whom', {})
+
+            # If both have casualties and they match, it's the same event
+            if casualties1 and casualties2:
+                deaths1 = casualties1.get('deaths')
+                deaths2 = casualties2.get('deaths')
+                if deaths1 and deaths2 and deaths1 == deaths2:
+                    return True
+
+        return False
+
+    def _merge_two_events(self, event1: Dict, event2: Dict) -> Dict:
+        """
+        Merge two events, combining their information.
+
+        Args:
+            event1: Primary event
+            event2: Secondary event to merge in
+
+        Returns:
+            Merged event
+        """
+        merged = event1.copy()
+
+        # For each 5W1H component, use the more complete one
+        for component in ['who', 'whom', 'where', 'when', 'how']:
+            val1 = merged.get(component)
+            val2 = event2.get(component)
+
+            # If event1 is missing this component but event2 has it
+            if not val1 and val2:
+                merged[component] = val2
+            # If both have it, prefer the one with more information
+            elif val1 and val2:
+                if isinstance(val1, dict) and isinstance(val2, dict):
+                    # Merge dictionaries, preferring non-null values from event2
+                    for key, value in val2.items():
+                        if value and not val1.get(key):
+                            val1[key] = value
+
+        # Recalculate confidence for merged event
+        merged['confidence'] = self._calculate_confidence(merged)
+
+        return merged
+
+    def _cluster_coreferent_events(self, events: List[Dict], article_annotation: Dict) -> List[Dict]:
+        """
+        Cluster events that refer to the same real-world incident.
+
+        This handles coreference across multiple sentences describing the same event.
+
+        Args:
+            events: List of extracted events
+            article_annotation: Full article annotation
+
+        Returns:
+            Clustered events (one per real incident)
+        """
+        if len(events) <= 1:
+            return events
+
+        # Build similarity matrix
+        n = len(events)
+        clusters = []  # List of event clusters
+        used = set()
+
+        for i in range(n):
+            if i in used:
+                continue
+
+            # Start new cluster with this event
+            cluster = [events[i]]
+            used.add(i)
+
+            # Find all events that should be in same cluster
+            for j in range(i + 1, n):
+                if j in used:
+                    continue
+
+                if self._events_refer_to_same_incident(events[i], events[j], article_annotation):
+                    cluster.append(events[j])
+                    used.add(j)
+
+            # If cluster has multiple events, merge them into one
+            if len(cluster) > 1:
+                merged_event = self._merge_event_cluster(cluster)
+                clusters.append(merged_event)
+            else:
+                clusters.append(cluster[0])
+
+        return clusters
+
+    def _events_refer_to_same_incident(self, event1: Dict, event2: Dict, article_annotation: Dict) -> bool:
+        """
+        Determine if two events refer to the same real-world incident.
+
+        Uses multiple signals:
+        - Same actor
+        - Same location
+        - Same casualties (deaths/injuries)
+        - Close temporal proximity (within 3 sentences)
+        - Related event types
+
+        Args:
+            event1, event2: Events to compare
+            article_annotation: Article context
+
+        Returns:
+            True if events likely describe same incident
+        """
+        score = 0
+
+        # Signal 1: Same actor (strong signal)
+        who1 = event1.get('who')
+        who2 = event2.get('who')
+        if who1 and who2:
+            actor1_text = who1.get('text', '').lower()
+            actor2_text = who2.get('text', '').lower()
+            if actor1_text and actor2_text and actor1_text == actor2_text:
+                score += 3  # Strong signal
+            elif actor1_text and actor2_text:
+                # Check if one contains the other (e.g., "Al-Shabaab" vs "group")
+                if actor1_text in actor2_text or actor2_text in actor1_text:
+                    score += 2
+
+        # Signal 2: Same location (strong signal)
+        where1 = event1.get('where')
+        where2 = event2.get('where')
+        if where1 and where2:
+            loc1_text = where1.get('text', '').lower()
+            loc2_text = where2.get('text', '').lower()
+            if loc1_text and loc2_text and loc1_text == loc2_text:
+                score += 3  # Strong signal
+
+        # Signal 3: Same casualties (very strong signal)
+        whom1 = event1.get('whom')
+        whom2 = event2.get('whom')
+        if whom1 and whom2:
+            deaths1 = whom1.get('deaths')
+            deaths2 = whom2.get('deaths')
+            injuries1 = whom1.get('injuries')
+            injuries2 = whom2.get('injuries')
+
+            # If both have same death count (and it's not None), very likely same event
+            if deaths1 and deaths2 and deaths1 == deaths2:
+                score += 5  # Very strong signal
+
+            # Same injury count
+            if injuries1 and injuries2 and injuries1 == injuries2:
+                score += 3
+
+        # Signal 4: Temporal proximity (within 3 sentences)
+        sent_diff = abs(event1.get('sentence_index', 0) - event2.get('sentence_index', 0))
+        if sent_diff <= 3:
+            score += 1
+        elif sent_diff <= 5:
+            score += 0.5
+
+        # Signal 5: Related event types (medium signal)
+        trigger1 = event1.get('trigger', {}).get('lemma', '')
+        trigger2 = event2.get('trigger', {}).get('lemma', '')
+
+        # Strongly related triggers (describing different aspects of same event)
+        related_pairs = [
+            ('detonate', 'explosion'), ('detonate', 'bomb'), ('bomb', 'explosion'),
+            ('kill', 'death'), ('shoot', 'kill'), ('fire', 'kill'),
+            ('attack', 'kill'), ('storm', 'attack'), ('injure', 'kill')
+        ]
+
+        for t1, t2 in related_pairs:
+            if (trigger1 == t1 and trigger2 == t2) or (trigger1 == t2 and trigger2 == t1):
+                score += 2
+                break
+
+        # Same trigger type
+        if trigger1 == trigger2:
+            score += 1
+
+        # Decision threshold
+        # AGGRESSIVE: Lower threshold to merge more events
+        # If score >= 4, likely same incident (was 5)
+        # If score >= 7, very likely same incident
+        return score >= 4
+
+    def _merge_event_cluster(self, cluster: List[Dict]) -> Dict:
+        """
+        Merge a cluster of events into a single comprehensive event.
+
+        Takes the best information from each event in cluster.
+
+        Args:
+            cluster: List of events describing same incident
+
+        Returns:
+            Single merged event
+        """
+        if len(cluster) == 1:
+            return cluster[0]
+
+        # Start with the event that has highest completeness
+        events_by_completeness = sorted(cluster, key=lambda e: e.get('confidence', 0), reverse=True)
+        merged = events_by_completeness[0].copy()
+
+        # Merge information from other events
+        for event in cluster[1:]:
+            # For each component, take the better/more complete one
+            for component in ['who', 'whom', 'where', 'when', 'how']:
+                current = merged.get(component)
+                new = event.get(component)
+
+                # If we don't have this component, take it from new event
+                if not current and new:
+                    merged[component] = new
+
+                # If both have it, merge dictionaries
+                elif current and new and isinstance(current, dict) and isinstance(new, dict):
+                    # Prefer non-null, more specific values
+                    for key, value in new.items():
+                        if value and not current.get(key):
+                            current[key] = value
+                        # Special case: prefer named victims over generic ones
+                        elif key == 'text' and value and new.get('named_victim'):
+                            current[key] = value
+                            current['named_victim'] = True
+                        # Special case: casualties - take if higher/more complete
+                        elif key in ['deaths', 'injuries'] and value:
+                            if not current.get(key) or value > current.get(key):
+                                current[key] = value
+
+            # Combine weapons
+            how_merged = merged.get('how')
+            how_new = event.get('how')
+            if how_merged and how_new and isinstance(how_merged, dict) and isinstance(how_new, dict):
+                # Combine weapon lists
+                weapons_merged = set(how_merged.get('weapons', []))
+                weapons_new = set(how_new.get('weapons', []))
+                combined_weapons = list(weapons_merged.union(weapons_new))
+                if combined_weapons:
+                    how_merged['weapons'] = combined_weapons
+                    how_merged['text'] = ', '.join(combined_weapons)
+
+        # Use the most specific/informative trigger
+        # Prefer action verbs over nouns
+        best_trigger = merged.get('trigger')
+        for event in cluster:
+            trigger = event.get('trigger', {})
+            if trigger.get('type') == 'verb' and best_trigger.get('type') == 'noun':
+                merged['trigger'] = trigger
+                merged['what'] = event.get('what')
+
+        # Recalculate confidence for merged event
+        merged['confidence'] = self._calculate_confidence(merged)
+
+        # Add metadata about cluster size
+        merged['cluster_size'] = len(cluster)
+        merged['sentence_indices'] = sorted(set(e.get('sentence_index', 0) for e in cluster))
+
+        return merged
 
 
 # ============================================================================
@@ -652,8 +1581,8 @@ if __name__ == '__main__':
     }
     
     # Initialize components
-    from domain_specific.violence_lexicon import ViolenceLexicon
-    from domain_specific.african_ner import AfricanNER
+    from domain.violence_lexicon import ViolenceLexicon
+    from domain.african_ner import AfricanNER
     
     lexicon = ViolenceLexicon()
     ner = AfricanNER()

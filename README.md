@@ -146,8 +146,8 @@ AU-CEWS analysts manually read thousands of news articles to track violent event
 └──────┬───────────┘
        ↓
 ┌──────────────────┐
-│  Domain-Specific │  ← domain_specific/violence_lexicon.py
-│  Processing      │     domain_specific/african_ner.py
+│  Domain-Specific │  ← domain/violence_lexicon.py
+│  Processing      │     domain/african_ner.py
 └──────┬───────────┘
        ↓
 ┌──────────────────┐
@@ -224,7 +224,7 @@ nlp_pipeline/
 │   ├── lexical_features.py           # Word-level features
 │   └── syntactic_features.py         # Parse tree features
 │
-├── domain_specific/                   # African violence context
+├── domain/                   # African violence context
 │   ├── __init__.py
 │   ├── violence_lexicon.py           # Violence keywords
 │   └── african_ner.py                # African entity recognition
@@ -569,7 +569,7 @@ features = extractor.extract(sentence_annotation)
 
 ---
 
-### 4. Domain-Specific Modules (`domain_specific/`)
+### 4. Domain-Specific Modules (`domain/`)
 
 #### `violence_lexicon.py`
 
@@ -651,7 +651,7 @@ WEAPONS = [
 **Usage:**
 
 ```python
-from domain_specific.violence_lexicon import ViolenceLexicon
+from domain.violence_lexicon import ViolenceLexicon
 
 lexicon = ViolenceLexicon()
 matches = lexicon.match(text)
@@ -740,7 +740,7 @@ CoreNLP NER: [("Goma", "LOCATION")]  # Misses ethnic groups
 **Usage:**
 
 ```python
-from domain_specific.african_ner import AfricanNER
+from domain.african_ner import AfricanNER
 
 aner = AfricanNER()
 entities = aner.enhance_entities(corenlp_entities, text)
@@ -1058,7 +1058,7 @@ SVO pattern: ('militants', 'civilians')
 ### Example 4: Test Violence Detection
 
 ```python
-from domain_specific.violence_lexicon import ViolenceLexicon
+from domain.violence_lexicon import ViolenceLexicon
 
 lexicon = ViolenceLexicon()
 
@@ -1106,7 +1106,7 @@ for sentence in test_sentences:
 
 ```python
 from stanford_nlp.corenlp_wrapper import CoreNLPWrapper
-from domain_specific.african_ner import AfricanNER
+from domain.african_ner import AfricanNER
 
 nlp = CoreNLPWrapper('./stanford-corenlp-4.5.5')
 aner = AfricanNER()
@@ -1152,14 +1152,14 @@ Enhanced entities:
 
 ### How Components Map to 16-Week Timeline
 
-| Weeks     | Phase                     | Components Used                                                                                     |
-| --------- | ------------------------- | --------------------------------------------------------------------------------------------------- |
-| **1-2**   | Annotation Infrastructure | - Excel templates<br>- Validation scripts<br>- Annotation guidelines                                |
-| **3-6**   | Build NLP Pipeline        | - `preprocessing/`<br>- `stanford_nlp/`<br>- `features/`<br>- `domain_specific/`<br>- `pipeline.py` |
-| **7-8**   | Database Design           | - PostgreSQL schema<br>- Neo4j graph<br>- API specs                                                 |
-| **9-12**  | Machine Learning          | - Use extracted features<br>- Train on annotated data<br>- SVM, Random Forest, BERT                 |
-| **13-15** | System Integration        | - Full pipeline<br>- Knowledge base<br>- Q&A system<br>- Web interface                              |
-| **16**    | Final Evaluation          | - Comprehensive testing<br>- Performance analysis<br>- Thesis writing                               |
+| Weeks     | Phase                     | Components Used                                                                            |
+| --------- | ------------------------- | ------------------------------------------------------------------------------------------ |
+| **1-2**   | Annotation Infrastructure | - Excel templates<br>- Validation scripts<br>- Annotation guidelines                       |
+| **3-6**   | Build NLP Pipeline        | - `preprocessing/`<br>- `stanford_nlp/`<br>- `features/`<br>- `domain/`<br>- `pipeline.py` |
+| **7-8**   | Database Design           | - PostgreSQL schema<br>- Neo4j graph<br>- API specs                                        |
+| **9-12**  | Machine Learning          | - Use extracted features<br>- Train on annotated data<br>- SVM, Random Forest, BERT        |
+| **13-15** | System Integration        | - Full pipeline<br>- Knowledge base<br>- Q&A system<br>- Web interface                     |
+| **16**    | Final Evaluation          | - Comprehensive testing<br>- Performance analysis<br>- Thesis writing                      |
 
 ### Current Status: Week 3-6 (NLP Pipeline)
 

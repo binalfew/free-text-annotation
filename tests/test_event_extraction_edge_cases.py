@@ -2,8 +2,8 @@
 
 import unittest
 from event_extraction import EventExtractor, EventTriggerDetector, FiveW1HExtractor
-from domain_specific.violence_lexicon import ViolenceLexicon
-from domain_specific.african_ner import AfricanNER
+from domain.violence_lexicon import ViolenceLexicon
+from domain.african_ner import AfricanNER
 
 class TestEventExtractionEdgeCases(unittest.TestCase):
     """Test edge cases in event extraction."""

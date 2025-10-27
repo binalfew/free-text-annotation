@@ -3,7 +3,7 @@
 import unittest
 from features.lexical_features import LexicalFeatureExtractor
 from features.syntactic_features import SyntacticFeatureExtractor
-from domain_specific.violence_lexicon import ViolenceLexicon
+from domain.violence_lexicon import ViolenceLexicon
 
 class TestFeatureExtractionIntegration(unittest.TestCase):
     """Test integration of feature extraction components."""
@@ -20,7 +20,7 @@ class TestFeatureExtractionIntegration(unittest.TestCase):
         tokens = [
             {'word': 'Armed', 'pos': 'JJ', 'index': 0, 'lemma': 'armed'},
             {'word': 'militants', 'pos': 'NNS', 'index': 1, 'lemma': 'militant'},
-            {'word': 'kill', 'pos': 'VBD', 'index': 2, 'lemma': 'kill'},
+            {'word': 'killed', 'pos': 'VBD', 'index': 2, 'lemma': 'kill'},
             {'word': '15', 'pos': 'CD', 'index': 3, 'lemma': '15'},
             {'word': 'civilians', 'pos': 'NNS', 'index': 4, 'lemma': 'civilian'},
             {'word': 'in', 'pos': 'IN', 'index': 5, 'lemma': 'in'},
@@ -102,11 +102,12 @@ class TestFeatureExtractionIntegration(unittest.TestCase):
     def test_weapon_detection_integration(self):
         """Test weapon detection across lexical and syntactic features."""
         tokens = [
-            {'word': 'gunmen', 'pos': 'NNS', 'index': 0, 'lemma': 'gunman'},
+            {'word': 'Gunmen', 'pos': 'NNS', 'index': 0, 'lemma': 'gunman'},
             {'word': 'fired', 'pos': 'VBD', 'index': 1, 'lemma': 'fire'},
-            {'word': 'gun', 'pos': 'NN', 'index': 2, 'lemma': 'gun'},
-            {'word': 'at', 'pos': 'IN', 'index': 3, 'lemma': 'at'},
-            {'word': 'civilians', 'pos': 'NNS', 'index': 4, 'lemma': 'civilian'}
+            {'word': 'AK-47', 'pos': 'NNP', 'index': 2, 'lemma': 'AK-47'},
+            {'word': 'rifles', 'pos': 'NNS', 'index': 3, 'lemma': 'rifle'},
+            {'word': 'at', 'pos': 'IN', 'index': 4, 'lemma': 'at'},
+            {'word': 'civilians', 'pos': 'NNS', 'index': 5, 'lemma': 'civilian'}
         ]
         dependencies = [
             {'dep': 'nsubj', 'governor': 2, 'dependent': 1},
@@ -130,7 +131,7 @@ class TestFeatureExtractionIntegration(unittest.TestCase):
             {'word': '25', 'pos': 'CD', 'index': 2, 'lemma': '25'},
             {'word': 'people', 'pos': 'NNS', 'index': 3, 'lemma': 'people'},
             {'word': 'were', 'pos': 'VBD', 'index': 4, 'lemma': 'be'},
-            {'word': 'dead', 'pos': 'JJ', 'index': 5, 'lemma': 'dead'},
+            {'word': 'killed', 'pos': 'VBN', 'index': 5, 'lemma': 'kill'},
             {'word': 'and', 'pos': 'CC', 'index': 6, 'lemma': 'and'},
             {'word': '12', 'pos': 'CD', 'index': 7, 'lemma': '12'},
             {'word': 'injured', 'pos': 'VBN', 'index': 8, 'lemma': 'injure'}

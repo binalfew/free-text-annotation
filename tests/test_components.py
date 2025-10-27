@@ -22,7 +22,7 @@ def test_text_cleaner():
 
 def test_violence_lexicon():
     """Test violence lexicon."""
-    from domain_specific.violence_lexicon import ViolenceLexicon
+    from domain.violence_lexicon import ViolenceLexicon
     
     lexicon = ViolenceLexicon()
     
@@ -34,7 +34,7 @@ def test_violence_lexicon():
 
 def test_african_ner():
     """Test African NER."""
-    from domain_specific.african_ner import AfricanNER
+    from domain.african_ner import AfricanNER
     
     ner = AfricanNER()
     
