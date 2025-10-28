@@ -25,17 +25,22 @@ class ViolentEventNLPPipeline:
         """
         self.config = config
         self.logger = self._setup_logging()
-        
+
+        corenlp_config = self._validate_config()
+
         # Initialize components
         self.logger.info("Initializing NLP pipeline components...")
-        
+
         self.text_cleaner = TextCleaner()
         self.sentence_splitter = SentenceSplitter()
-        
-        # Stanford CoreNLP
-        corenlp_path = config.get('stanford_corenlp', {}).get('path', './stanford-corenlp')
-        memory = config.get('stanford_corenlp', {}).get('memory', '4g')
-        self.corenlp = CoreNLPWrapper(corenlp_path, memory)
+
+        # Stanford CoreNLP (with lightweight fallback)
+        corenlp_path = corenlp_config['path']
+        memory = corenlp_config.get('memory', '4g')
+        allow_fallback = corenlp_config.get('allow_fallback')
+        if allow_fallback is None:
+            allow_fallback = not Path(corenlp_path).is_absolute()
+        self.corenlp = CoreNLPWrapper(corenlp_path, memory, allow_fallback=allow_fallback)
         
         # Feature extractors
         self.violence_lexicon = ViolenceLexicon()
@@ -54,6 +59,17 @@ class ViolentEventNLPPipeline:
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
         return logging.getLogger(__name__)
+
+    def _validate_config(self) -> Dict:
+        """Validate that the minimal configuration is present."""
+        if 'stanford_corenlp' not in self.config:
+            raise KeyError("Missing 'stanford_corenlp' configuration section")
+
+        corenlp_config = self.config['stanford_corenlp']
+        if 'path' not in corenlp_config:
+            raise KeyError("Missing 'stanford_corenlp.path' configuration value")
+
+        return corenlp_config
     
     def process_article(self, article_text: str, article_id: str = None) -> Dict:
         """
