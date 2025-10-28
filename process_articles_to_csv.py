@@ -165,6 +165,11 @@ def process_articles_to_csv(articles_file, output_file):
     # Write to CSV
     print(f"\nWriting {len(all_events)} events to CSV: {output_file}")
 
+    # Ensure the destination directory exists before attempting to write.
+    output_path = Path(output_file)
+    if output_path.parent and not output_path.parent.exists():
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
     fieldnames = [
         'article_id', 'event_id', 'article_title', 'article_source', 'article_date',
         'article_location', 'article_type',
@@ -178,7 +183,7 @@ def process_articles_to_csv(articles_file, output_file):
         'confidence', 'completeness'
     ]
 
-    with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
+    with open(output_path, 'w', newline='', encoding='utf-8') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(all_events)
