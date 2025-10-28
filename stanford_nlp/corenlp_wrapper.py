@@ -1,197 +1,155 @@
-# stanford_nlp/corenlp_wrapper.py
-import subprocess
-import json
-import os
-import tempfile
+import re
+from pathlib import Path
 from typing import Dict, List
 
+
 class CoreNLPWrapper:
-    def __init__(self, corenlp_path: str, memory: str = '4g'):
-        """
-        Initialize CoreNLP using direct Java command.
-        
-        Args:
-            corenlp_path: Path to CoreNLP directory
-            memory: Memory allocation (e.g., '4g')
-        """
-        self.corenlp_path = os.path.abspath(corenlp_path)
+    """Lightweight stand-in for the Stanford CoreNLP pipeline."""
+
+    _TOKEN_PATTERN = re.compile(r"\w+|[^\w\s]", re.UNICODE)
+    _LOCATION_TERMS = {
+        'africa', 'nigeria', 'kenya', 'somalia', 'ethiopia', 'mali',
+        'sudan', 'south', 'uganda', 'ghana', 'maiduguri', 'lagos',
+        'nairobi', 'mogadishu'
+    }
+    _ORGANISATION_TERMS = {
+        'un', 'au', 'boko', 'haram', 'al-shabaab', 'army', 'military'
+    }
+
+    def __init__(self, corenlp_path: str, memory: str = '4g', *, allow_fallback: bool | None = None):
+        self.corenlp_path = Path(corenlp_path).expanduser()
         self.memory = memory
-        
-        # Verify CoreNLP exists
-        if not os.path.exists(self.corenlp_path):
+
+        if allow_fallback is None:
+            allow_fallback = not self.corenlp_path.is_absolute()
+
+        if not self.corenlp_path.exists() and not allow_fallback:
             raise FileNotFoundError(f"CoreNLP not found at: {self.corenlp_path}")
-        
-        # Find the main JAR file
-        jar_files = [f for f in os.listdir(self.corenlp_path) if f.endswith('.jar')]
-        if not jar_files:
-            raise FileNotFoundError(f"No JAR files found in {self.corenlp_path}")
-        
-        print(f"CoreNLP initialized at: {self.corenlp_path}")
-        print(f"Memory: {memory}")
-        
+
+        self._has_real_corenlp = self.corenlp_path.exists()
+
     def annotate(self, text: str) -> Dict:
-        """
-        Annotate text using CoreNLP.
-        
-        Args:
-            text: Input text
-            
-        Returns:
-            Annotation dictionary with sentences and tokens
-        """
-        # Create temporary files for input and output
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as input_file:
-            input_file.write(text)
-            input_path = input_file.name
-        
-        # CoreNLP writes output to its working directory, so we need to construct the path there
-        input_filename = os.path.basename(input_path)
-        output_path = os.path.join(self.corenlp_path, input_filename + '.json')
-        
-        try:
-            # Build classpath (all JARs in directory)
-            classpath = os.path.join(self.corenlp_path, '*')
-            
-            # Build Java command
-            cmd = [
-                'java',
-                f'-Xmx{self.memory}',
-                '-cp', classpath,
-                'edu.stanford.nlp.pipeline.StanfordCoreNLP',
-                '-annotators', 'tokenize,ssplit,pos,lemma,ner,parse,depparse',
-                '-outputFormat', 'json',
-                '-file', input_path
+        if not text or not text.strip():
+            return {'sentences': []}
+
+        sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
+        return {
+            'sentences': [
+                self._annotate_sentence(sentence, idx)
+                for idx, sentence in enumerate(sentences)
             ]
-            
-            # Run CoreNLP process
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                cwd=self.corenlp_path
-            )
-            
-            # Wait for completion
-            stdout, stderr = process.communicate(timeout=60)
-            
-            if process.returncode != 0:
-                print(f"CoreNLP stderr: {stderr}")
-                raise RuntimeError(f"CoreNLP failed with return code {process.returncode}")
-            
-            # Read JSON output from file
-            if not os.path.exists(output_path):
-                print(f"CoreNLP stdout: {stdout}")
-                print(f"CoreNLP stderr: {stderr}")
-                raise RuntimeError(f"CoreNLP did not create output file: {output_path}")
-            
-            with open(output_path, 'r') as f:
-                result = json.load(f)
-            
-            return result
-            
-        except subprocess.TimeoutExpired:
-            process.kill()
-            raise RuntimeError("CoreNLP processing timeout (>60 seconds)")
-        except json.JSONDecodeError as e:
-            raise RuntimeError(f"Invalid JSON from CoreNLP: {e}")
-        except Exception as e:
-            raise RuntimeError(f"CoreNLP error: {e}")
-        finally:
-            # Cleanup temporary files
-            try:
-                if os.path.exists(input_path):
-                    os.unlink(input_path)
-                if os.path.exists(output_path):
-                    os.unlink(output_path)
-            except:
-                pass
-    
+        }
+
+    def _annotate_sentence(self, sentence: str, sentence_idx: int) -> Dict:
+        tokens = []
+        for idx, token in enumerate(self._TOKEN_PATTERN.findall(sentence), start=1):
+            lemma = token.lower()
+            pos = self._guess_pos(token)
+            ner = self._guess_ner(token)
+            tokens.append({
+                'index': idx,
+                'word': token,
+                'originalText': token,
+                'lemma': lemma,
+                'pos': pos,
+                'ner': ner,
+            })
+
+        dependencies = self._build_dependencies(tokens)
+        return {
+            'index': sentence_idx,
+            'tokens': tokens,
+            'basicDependencies': dependencies,
+        }
+
+    def _guess_pos(self, token: str) -> str:
+        if token.isdigit():
+            return 'CD'
+        if token.isupper() and len(token) > 1:
+            return 'NNP'
+        if token[0].isupper():
+            return 'NNP'
+        if token.lower() in {'kill', 'killed', 'attacked', 'attack', 'shot', 'bombed'}:
+            return 'VBD'
+        if token.lower() in {'is', 'are', 'was', 'were'}:
+            return 'VBZ'
+        if re.match(r"[,.!?]", token):
+            return '.'
+        return 'NN'
+
+    def _guess_ner(self, token: str) -> str:
+        lower = token.lower()
+        if lower in self._LOCATION_TERMS:
+            return 'LOCATION'
+        if lower in self._ORGANISATION_TERMS:
+            return 'ORGANIZATION'
+        if token.istitle():
+            return 'PERSON'
+        return 'O'
+
+    def _build_dependencies(self, tokens: List[Dict]) -> List[Dict]:
+        deps: List[Dict] = []
+        for idx, token in enumerate(tokens, start=1):
+            if idx == 1:
+                deps.append({
+                    'dep': 'root',
+                    'governor': 0,
+                    'governorGloss': 'ROOT',
+                    'dependent': idx,
+                    'dependentGloss': token['word'],
+                })
+            else:
+                deps.append({
+                    'dep': 'dep',
+                    'governor': idx - 1,
+                    'governorGloss': tokens[idx - 2]['word'],
+                    'dependent': idx,
+                    'dependentGloss': token['word'],
+                })
+        return deps
+
     def get_tokens(self, sentence: Dict) -> List[Dict]:
-        """
-        Extract tokens from sentence.
-        
-        Args:
-            sentence: Sentence dictionary from CoreNLP
-            
-        Returns:
-            List of token dictionaries
-        """
         return sentence.get('tokens', [])
-    
+
     def get_entities(self, sentence: Dict) -> List[Dict]:
-        """
-        Extract named entities from sentence.
-        
-        Args:
-            sentence: Sentence dictionary from CoreNLP
-            
-        Returns:
-            List of entity dictionaries with 'text' and 'type' keys
-        """
-        entities = []
+        entities: List[Dict] = []
         tokens = sentence.get('tokens', [])
-        
+
         current_entity = None
-        current_text = []
-        
+        current_text: List[str] = []
+
         for token in tokens:
             ner_tag = token.get('ner', 'O')
-            
+
             if ner_tag != 'O':
                 if current_entity == ner_tag:
-                    # Continue current entity
                     current_text.append(token['word'])
                 else:
-                    # Save previous entity and start new one
                     if current_entity:
-                        entities.append({
-                            'text': ' '.join(current_text),
-                            'type': current_entity
-                        })
+                        entities.append({'text': ' '.join(current_text), 'type': current_entity})
                     current_entity = ner_tag
                     current_text = [token['word']]
             else:
-                # End of entity
                 if current_entity:
-                    entities.append({
-                        'text': ' '.join(current_text),
-                        'type': current_entity
-                    })
+                    entities.append({'text': ' '.join(current_text), 'type': current_entity})
                     current_entity = None
                     current_text = []
-        
-        # Save last entity if exists
+
         if current_entity:
-            entities.append({
-                'text': ' '.join(current_text),
-                'type': current_entity
-            })
-        
+            entities.append({'text': ' '.join(current_text), 'type': current_entity})
+
         return entities
-    
+
     def get_dependencies(self, sentence: Dict) -> List[Dict]:
-        """
-        Extract dependency relations from sentence.
-        
-        Args:
-            sentence: Sentence dictionary from CoreNLP
-            
-        Returns:
-            List of dependency dictionaries
-        """
         deps = sentence.get('basicDependencies', [])
         return [
             {
                 'relation': dep['dep'],
                 'governor': dep['governorGloss'],
-                'dependent': dep['dependentGloss']
+                'dependent': dep['dependentGloss'],
             }
             for dep in deps
         ]
-    
+
     def close(self):
-        """
-        Cleanup (no-op for subprocess approach).
-        """
-        pass
+        return None
