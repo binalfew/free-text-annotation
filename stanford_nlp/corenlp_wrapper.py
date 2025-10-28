@@ -1,6 +1,6 @@
 import re
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 class CoreNLPWrapper:
@@ -16,7 +16,7 @@ class CoreNLPWrapper:
         'un', 'au', 'boko', 'haram', 'al-shabaab', 'army', 'military'
     }
 
-    def __init__(self, corenlp_path: str, memory: str = '4g', *, allow_fallback: bool | None = None):
+    def __init__(self, corenlp_path: str, memory: str = '4g', *, allow_fallback: Optional[bool] = None):
         self.corenlp_path = Path(corenlp_path).expanduser()
         self.memory = memory
 

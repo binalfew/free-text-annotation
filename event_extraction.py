@@ -143,19 +143,21 @@ class FiveW1HExtractor:
         self.ner = african_ner
         self.logger = logging.getLogger(__name__)
     
-    def extract(self, sentence_annotation: Dict, triggers: List[Dict]) -> List[Dict]:
+    def extract(self, sentence_annotation: Dict, triggers: List[Dict], article_date: Optional[str] = None, article_text: Optional[str] = None) -> List[Dict]:
         """
         Extract 5W1H for each trigger in sentence.
-        
+
         Args:
             sentence_annotation: CoreNLP annotation
             triggers: List of detected triggers
-            
+            article_date: Article publication date for date normalization
+            article_text: Full article text for context (e.g., responsibility claims)
+
         Returns:
             List of event extractions (one per trigger)
         """
         extractions = []
-        
+
         for trigger in triggers:
             extraction = {
                 'trigger': trigger,
@@ -166,17 +168,17 @@ class FiveW1HExtractor:
                 'when': None,     # Time
                 'how': None       # Method/weapon
             }
-            
+
             # Extract for this trigger
             extraction['what'] = self._extract_what(trigger, sentence_annotation)
-            extraction['who'] = self._extract_who(trigger, sentence_annotation)
+            extraction['who'] = self._extract_who(trigger, sentence_annotation, article_text)
             extraction['whom'] = self._extract_whom(trigger, sentence_annotation)
             extraction['where'] = self._extract_where(sentence_annotation)
-            extraction['when'] = self._extract_when(sentence_annotation)
+            extraction['when'] = self._extract_when(sentence_annotation, article_date)
             extraction['how'] = self._extract_how(trigger, sentence_annotation)
-            
+
             extractions.append(extraction)
-        
+
         return extractions
     
     def _extract_what(self, trigger: Dict, sent_ann: Dict) -> Dict:
@@ -215,7 +217,7 @@ class FiveW1HExtractor:
         else:
             return 'violence'
     
-    def _extract_who(self, trigger: Dict, sent_ann: Dict) -> Optional[Dict]:
+    def _extract_who(self, trigger: Dict, sent_ann: Dict, article_text: Optional[str] = None) -> Optional[Dict]:
         """
         Extract actor (Who did it).
 
@@ -227,6 +229,13 @@ class FiveW1HExtractor:
         text = sent_ann.get('text', '')
 
         trigger_idx = trigger['sentence_index']  # Use sentence_index from trigger
+
+        # APPROACH 0: Check for "claimed responsibility" patterns in article context
+        # This is critical for cases like "Al-Shabaab claimed responsibility for the attack"
+        if article_text:
+            responsibility_actor = self._extract_actor_from_responsibility_claim(article_text, entities)
+            if responsibility_actor:
+                return responsibility_actor
 
         # Approach 1: Find subject dependency (nsubj, nsubjpass, agent)
         actor_idx = None
@@ -253,11 +262,13 @@ class FiveW1HExtractor:
                         entity_pos = text.find(entity_text)
                         trigger_pos = text.find(trigger['word'])
                         if entity_pos < trigger_pos and trigger_pos - entity_pos < 100:
-                            return {
-                                'text': entity_text,
-                                'type': entity.get('subtype', entity.get('type')),
-                                'metadata': entity.get('metadata', {})
-                            }
+                            # Validate this is likely an actor (not a location like "Bakara")
+                            if self._is_likely_actor(entity_text):
+                                return {
+                                    'text': entity_text,
+                                    'type': entity.get('subtype', entity.get('type')),
+                                    'metadata': entity.get('metadata', {})
+                                }
 
         # Approach 3: Extract from dependencies
         if actor_idx is not None and 0 <= actor_idx < len(tokens):
@@ -267,14 +278,19 @@ class FiveW1HExtractor:
             # Build actor text
             actor_text = ' '.join([tokens[i]['word'] for i in actor_span])
 
-            # Identify actor type
-            actor_type = self._identify_actor(actor_text, entities)
+            # CRITICAL: Validate this is likely an actor
+            if not self._is_likely_actor(actor_text):
+                # Reject this and continue to next approach
+                actor_idx = None
+            else:
+                # Identify actor type
+                actor_type = self._identify_actor(actor_text, entities)
 
-            return {
-                'text': actor_text,
-                'type': actor_type.get('type', 'unknown'),
-                'metadata': actor_type
-            }
+                return {
+                    'text': actor_text,
+                    'type': actor_type.get('type', 'unknown'),
+                    'metadata': actor_type
+                }
 
         # Approach 4: Pattern-based extraction for common actor patterns
         # Look for patterns like "X killed/attacked" where X is a noun phrase
@@ -296,6 +312,57 @@ class FiveW1HExtractor:
                             'type': actor_type.get('type', 'unknown'),
                             'metadata': actor_type
                         }
+
+        return None
+
+    def _extract_actor_from_responsibility_claim(self, article_text: str, entities: List[Dict]) -> Optional[Dict]:
+        """
+        Extract actor from responsibility claims like 'X claimed responsibility for the attack'.
+
+        Args:
+            article_text: Full article text
+            entities: List of entities from the article
+
+        Returns:
+            Actor dict or None
+        """
+        import re
+
+        # Patterns for responsibility claims
+        patterns = [
+            r'([A-Z][A-Za-z\-\s]+?)\s+claimed responsibility',
+            r'([A-Z][A-Za-z\-\s]+?)\s+took responsibility',
+            r'([A-Z][A-Za-z\-\s]+?)\s+said (they|it) (was|were) responsible',
+            r'responsibility was claimed by ([A-Z][A-Za-z\-\s]+)',
+            r'([A-Z][A-Za-z\-\s]+?)\s+stated that (they|the group)',
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, article_text)
+            if match:
+                potential_actor = match.group(1).strip()
+
+                # Validate this is likely an actor
+                if self._is_likely_actor(potential_actor):
+                    # Try to match with an entity for more metadata
+                    for entity in entities:
+                        if entity.get('type') == 'ORGANIZATION':
+                            entity_text = entity.get('text', '')
+                            if entity_text and entity_text.lower() in potential_actor.lower():
+                                return {
+                                    'text': entity_text,
+                                    'type': entity.get('subtype', 'ORGANIZATION'),
+                                    'metadata': entity.get('metadata', {}),
+                                    'from_responsibility_claim': True
+                                }
+
+                    # If no entity match, return the extracted actor
+                    return {
+                        'text': potential_actor,
+                        'type': 'ORGANIZATION',
+                        'metadata': {},
+                        'from_responsibility_claim': True
+                    }
 
         return None
     
@@ -443,38 +510,55 @@ class FiveW1HExtractor:
         
         return None
     
-    def _extract_when(self, sent_ann: Dict) -> Optional[Dict]:
+    def _extract_when(self, sent_ann: Dict, article_date: Optional[str] = None) -> Optional[Dict]:
         """
         Extract time (When it happened).
-        
+
         Strategy: Find DATE/TIME entities and temporal expressions
         """
         entities = sent_ann.get('entities', [])
         tokens = sent_ann.get('tokens', [])
-        
+
+        # Import date normalizer
+        try:
+            from utils.date_normalizer import DateNormalizer
+            normalizer = DateNormalizer()
+        except ImportError:
+            normalizer = None
+
         # Find date entities
         dates = [e for e in entities if e.get('type') == 'DATE']
-        
+
         if dates:
+            date_text = dates[0]['text']
+            normalized = None
+            if normalizer:
+                normalized = normalizer.normalize_date(date_text, article_date)
+
             return {
-                'text': dates[0]['text'],
+                'text': date_text,
                 'type': 'EXPLICIT',
-                'normalized': None  # Would need temporal normalization
+                'normalized': normalized
             }
-        
+
         # Look for temporal words
-        temporal_words = {'yesterday', 'today', 'tonight', 'monday', 'tuesday', 
+        temporal_words = {'yesterday', 'today', 'tonight', 'monday', 'tuesday',
                          'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
                          'morning', 'afternoon', 'evening', 'night'}
-        
+
         for token in tokens:
             if token.get('lemma', '').lower() in temporal_words:
+                date_text = token['word']
+                normalized = None
+                if normalizer and article_date:
+                    normalized = normalizer.normalize_date(date_text, article_date)
+
                 return {
-                    'text': token['word'],
+                    'text': date_text,
                     'type': 'RELATIVE',
-                    'normalized': None
+                    'normalized': normalized
                 }
-        
+
         return None
     
     def _extract_how(self, trigger: Dict, sent_ann: Dict) -> Optional[Dict]:
@@ -569,10 +653,46 @@ class FiveW1HExtractor:
             'soldier', 'soldiers', 'troop', 'troops', 'militant', 'militants', 'fighter', 'fighters',
             'rebel', 'rebels', 'insurgent', 'insurgents', 'terrorist', 'terrorists',
             'gang', 'gunman', 'gunmen', 'attacker', 'attackers', 'bomber',
-            'shabaab', 'boko', 'haram', 'aqim', 'isis'
+            'shabaab', 'boko', 'haram', 'aqim', 'isis', 'al-qaeda', 'al-shabaab',
+            'supporters', 'protesters', 'demonstrators', 'community', 'militia'
         }
 
-        return any(keyword in text_lower for keyword in actor_keywords)
+        # CRITICAL: Exclude obvious non-actors
+        non_actor_indicators = {
+            # Places
+            'market', 'markets', 'building', 'buildings', 'town', 'city', 'village',
+            'street', 'road', 'area', 'region', 'country', 'province', 'state',
+            'restaurant', 'hotel', 'mosque', 'church', 'school', 'hospital',
+            # Times/descriptive words
+            'morning', 'afternoon', 'evening', 'night', 'day', 'week', 'month',
+            'violent', 'recent', 'deadly', 'latest', 'ongoing',
+            # Articles/determiners
+            'the', 'a', 'an', 'this', 'that', 'these', 'those',
+            # Prepositions (shouldn't appear alone)
+            'during', 'after', 'before', 'in', 'at', 'on', 'by',
+            # Numbers
+            '1', '2', '3', '4', '5', '6', '7', '8', '9', '0'
+        }
+
+        # If it's a non-actor indicator, reject immediately
+        if any(non_actor in text_lower for non_actor in non_actor_indicators):
+            return False
+
+        # If it's less than 2 characters (like "The"), reject
+        if len(text.strip()) < 2:
+            return False
+
+        # If it contains actor keywords, accept
+        if any(keyword in text_lower for keyword in actor_keywords):
+            return True
+
+        # If it's a proper noun (starts with capital) and has multiple words, might be an organization
+        words = text.split()
+        if len(words) >= 2 and all(w[0].isupper() for w in words if w):
+            # Multi-word proper nouns are likely organizations/groups
+            return True
+
+        return False
 
     def _extract_victim_from_casualty_pattern(self, text: str) -> Optional[str]:
         """Extract victim type from casualty patterns in text."""
@@ -840,12 +960,13 @@ class EventExtractor:
         self.fivew1h_extractor = FiveW1HExtractor(african_ner)
         self.logger = logging.getLogger(__name__)
     
-    def extract_events(self, article_annotation: Dict) -> List[Dict]:
+    def extract_events(self, article_annotation: Dict, article_date: Optional[str] = None) -> List[Dict]:
         """
         Extract all events from annotated article.
 
         Args:
             article_annotation: Output from NLP pipeline
+            article_date: Article publication date for date normalization
 
         Returns:
             List of extracted events with 5W1H
@@ -858,6 +979,11 @@ class EventExtractor:
         # Extract article-level context
         article_context = self._extract_article_context(article_annotation)
 
+        # Extract article date if not provided
+        if not article_date:
+            metadata = article_annotation.get('metadata', {})
+            article_date = metadata.get('date')
+
         for sent_idx, sentence in enumerate(sentences):
             # Detect triggers
             triggers = self.trigger_detector.detect_triggers(sentence)
@@ -865,8 +991,8 @@ class EventExtractor:
             if not triggers:
                 continue
 
-            # Extract 5W1H for each trigger
-            extractions = self.fivew1h_extractor.extract(sentence, triggers)
+            # Extract 5W1H for each trigger (pass article_date and article_text)
+            extractions = self.fivew1h_extractor.extract(sentence, triggers, article_date, article_text)
 
             for extraction in extractions:
                 # Propagate article-level context to incomplete extractions
@@ -882,7 +1008,8 @@ class EventExtractor:
                     'where': extraction['where'],
                     'when': extraction['when'],
                     'how': extraction['how'],
-                    'confidence': self._calculate_confidence(extraction)
+                    'confidence': self._calculate_confidence(extraction),
+                    'completeness': self._calculate_completeness(extraction)
                 }
 
                 events.append(event)
@@ -941,6 +1068,46 @@ class EventExtractor:
 
         # Ensure score is between 0 and 1
         return round(min(score, 1.0), 2)
+
+    def _calculate_completeness(self, extraction: Dict) -> float:
+        """
+        Calculate completeness score based on presence of 5W1H components.
+
+        Args:
+            extraction: 5W1H extraction
+
+        Returns:
+            Completeness score 0-1 (1 = all components present)
+        """
+        score = 0.0
+        total_components = 6  # who, what, whom, where, when, how
+
+        # What (trigger/event type) - always present
+        if extraction.get('what'):
+            score += 1
+
+        # Who (actor)
+        if extraction.get('who'):
+            score += 1
+
+        # Whom (victim/casualties)
+        if extraction.get('whom'):
+            score += 1
+
+        # Where (location)
+        if extraction.get('where'):
+            score += 1
+
+        # When (time/date)
+        if extraction.get('when'):
+            score += 1
+
+        # How (weapon/method)
+        if extraction.get('how'):
+            score += 1
+
+        completeness = score / total_components
+        return round(completeness, 2)
 
     def _extract_article_context(self, article_annotation: Dict) -> Dict:
         """

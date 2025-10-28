@@ -114,8 +114,9 @@ def process_articles_to_csv(articles_file, output_file):
         # Process through NLP pipeline
         article_annotation = pipeline.process_article(article['body'], article_id)
 
-        # Extract events
-        events = extractor.extract_events(article_annotation)
+        # Extract events (pass article date for date normalization)
+        article_date = article.get('date', '')
+        events = extractor.extract_events(article_annotation, article_date)
 
         print(f"  ✓ Extracted {len(events)} event(s)")
 
@@ -151,6 +152,7 @@ def process_articles_to_csv(articles_file, output_file):
 
                 'when_time': event.get('when', {}).get('text', '') if event.get('when') else '',
                 'when_type': event.get('when', {}).get('type', '') if event.get('when') else '',
+                'when_normalized': event.get('when', {}).get('normalized', '') if event.get('when') else '',
 
                 'how_weapons': ', '.join(event.get('how', {}).get('weapons', [])) if event.get('how') else '',
                 'how_tactics': ', '.join(event.get('how', {}).get('tactics', [])) if event.get('how') else '',
@@ -178,7 +180,7 @@ def process_articles_to_csv(articles_file, output_file):
         'what_event_type',
         'whom_victim', 'whom_type', 'deaths', 'injuries',
         'where_location', 'where_type',
-        'when_time', 'when_type',
+        'when_time', 'when_type', 'when_normalized',
         'how_weapons', 'how_tactics',
         'confidence', 'completeness'
     ]
