@@ -317,6 +317,16 @@ class BatchProcessor:
         all_event_records = []
         
         for article in articles:
+            if not self._is_valid_article(article):
+                article_id = article.get('id', 'unknown')
+                results['failed'] += 1
+                results['articles'].append({
+                    'article_id': article_id,
+                    'status': 'failed',
+                    'error': 'missing required fields'
+                })
+                continue
+
             try:
                 article_result = self._process_single_article(article)
                 
@@ -352,6 +362,17 @@ class BatchProcessor:
             self.logger.info(f"Saved {len(combined_df)} events to {output_file}")
         
         return results
+
+    def _is_valid_article(self, article: Dict) -> bool:
+        """Ensure an article has the minimal fields required for processing."""
+        if not isinstance(article, dict):
+            return False
+
+        if 'id' not in article or 'text' not in article:
+            return False
+
+        # Empty strings are allowed – they simply lead to zero events.
+        return article['id'] is not None and article['text'] is not None
     
     def _process_parallel(self, articles: List[Dict],
                          batch_name: str, results: Dict) -> Dict:
