@@ -178,7 +178,10 @@ def process_articles_to_csv(articles_file, output_file):
         'confidence', 'completeness'
     ]
 
-    with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
+    output_path = Path(output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(output_path, 'w', newline='', encoding='utf-8') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(all_events)
