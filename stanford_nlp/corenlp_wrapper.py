@@ -368,25 +368,216 @@ class CoreNLPWrapper:
         return self._guess_ner_contextual(token, [token], 0)
 
     def _build_dependencies(self, tokens: List[Dict]) -> List[Dict]:
+        """Build meaningful dependency relations for event extraction."""
         deps: List[Dict] = []
-        for idx, token in enumerate(tokens, start=1):
-            if idx == 1:
-                deps.append({
-                    'dep': 'root',
-                    'governor': 0,
-                    'governorGloss': 'ROOT',
-                    'dependent': idx,
-                    'dependentGloss': token['word'],
-                })
+
+        if not tokens:
+            return deps
+
+        # Find the main verb (root)
+        root_idx = self._find_root_verb(tokens)
+
+        # Create root dependency
+        deps.append({
+            'dep': 'root',
+            'governor': 0,
+            'governorGloss': 'ROOT',
+            'dependent': root_idx + 1,  # 1-indexed
+            'dependentGloss': tokens[root_idx]['word'],
+        })
+
+        # Identify noun phrases (for compound handling)
+        noun_phrases = self._identify_noun_phrases(tokens)
+
+        # Build relations around the root verb
+        processed = set([root_idx])  # Track processed tokens
+
+        for idx, token in enumerate(tokens):
+            if idx in processed:
+                continue
+
+            pos = token['pos']
+            word = token['word']
+
+            # Determine relation type based on position and POS
+            if idx < root_idx:
+                # Before verb
+                if pos in ['NN', 'NNS', 'NNP', 'NNPS', 'PRP']:
+                    # Find head of noun phrase
+                    head_idx = noun_phrases.get(idx, idx)
+                    if head_idx != idx:
+                        # Part of compound
+                        deps.append({
+                            'dep': 'compound',
+                            'governor': head_idx + 1,
+                            'governorGloss': tokens[head_idx]['word'],
+                            'dependent': idx + 1,
+                            'dependentGloss': word,
+                        })
+                    else:
+                        # Head noun = subject
+                        deps.append({
+                            'dep': 'nsubj',
+                            'governor': root_idx + 1,
+                            'governorGloss': tokens[root_idx]['word'],
+                            'dependent': idx + 1,
+                            'dependentGloss': word,
+                        })
+                    processed.add(idx)
+                elif pos in ['JJ', 'DT', 'CD', 'PRP$']:
+                    # Modifier of subject
+                    target_idx = self._find_next_noun(tokens, idx)
+                    if target_idx != -1 and target_idx < root_idx:
+                        rel = 'det' if pos == 'DT' else 'amod' if pos == 'JJ' else 'nummod'
+                        deps.append({
+                            'dep': rel,
+                            'governor': target_idx + 1,
+                            'governorGloss': tokens[target_idx]['word'],
+                            'dependent': idx + 1,
+                            'dependentGloss': word,
+                        })
+                    processed.add(idx)
             else:
-                deps.append({
-                    'dep': 'dep',
-                    'governor': idx - 1,
-                    'governorGloss': tokens[idx - 2]['word'],
-                    'dependent': idx,
-                    'dependentGloss': token['word'],
-                })
+                # After verb
+                if pos in ['NN', 'NNS', 'NNP', 'NNPS', 'PRP']:
+                    # Check if part of noun phrase after preposition
+                    in_prep_phrase = False
+                    if idx > 0:
+                        for i in range(root_idx + 1, idx):
+                            if tokens[i]['pos'] == 'IN':
+                                in_prep_phrase = True
+                                break
+
+                    head_idx = noun_phrases.get(idx, idx)
+                    if head_idx != idx:
+                        # Part of compound
+                        deps.append({
+                            'dep': 'compound',
+                            'governor': head_idx + 1,
+                            'governorGloss': tokens[head_idx]['word'],
+                            'dependent': idx + 1,
+                            'dependentGloss': word,
+                        })
+                    elif in_prep_phrase:
+                        # Noun after preposition = nmod
+                        deps.append({
+                            'dep': 'nmod',
+                            'governor': root_idx + 1,
+                            'governorGloss': tokens[root_idx]['word'],
+                            'dependent': idx + 1,
+                            'dependentGloss': word,
+                        })
+                    else:
+                        # Direct object
+                        deps.append({
+                            'dep': 'dobj',
+                            'governor': root_idx + 1,
+                            'governorGloss': tokens[root_idx]['word'],
+                            'dependent': idx + 1,
+                            'dependentGloss': word,
+                        })
+                    processed.add(idx)
+                elif pos in ['JJ', 'DT', 'CD']:
+                    # Modifier of object
+                    target_idx = self._find_next_noun(tokens, idx)
+                    if target_idx != -1:
+                        rel = 'det' if pos == 'DT' else 'amod' if pos == 'JJ' else 'nummod'
+                        deps.append({
+                            'dep': rel,
+                            'governor': target_idx + 1,
+                            'governorGloss': tokens[target_idx]['word'],
+                            'dependent': idx + 1,
+                            'dependentGloss': word,
+                        })
+                    processed.add(idx)
+                elif pos == 'IN':
+                    # Preposition - attach to following noun
+                    target_idx = self._find_next_noun(tokens, idx)
+                    if target_idx != -1:
+                        deps.append({
+                            'dep': 'case',
+                            'governor': target_idx + 1,
+                            'governorGloss': tokens[target_idx]['word'],
+                            'dependent': idx + 1,
+                            'dependentGloss': word,
+                        })
+                    processed.add(idx)
+                elif pos == 'VBG' or pos == 'VBN':
+                    # Participle = adverbial clause
+                    deps.append({
+                        'dep': 'advcl',
+                        'governor': root_idx + 1,
+                        'governorGloss': tokens[root_idx]['word'],
+                        'dependent': idx + 1,
+                        'dependentGloss': word,
+                    })
+                    processed.add(idx)
+                elif pos == 'CC':
+                    # Conjunction
+                    deps.append({
+                        'dep': 'cc',
+                        'governor': root_idx + 1,
+                        'governorGloss': tokens[root_idx]['word'],
+                        'dependent': idx + 1,
+                        'dependentGloss': word,
+                    })
+                    processed.add(idx)
+                elif pos == 'RP':
+                    # Particle
+                    deps.append({
+                        'dep': 'compound:prt',
+                        'governor': root_idx + 1,
+                        'governorGloss': tokens[root_idx]['word'],
+                        'dependent': idx + 1,
+                        'dependentGloss': word,
+                    })
+                    processed.add(idx)
+
         return deps
+
+    def _identify_noun_phrases(self, tokens: List[Dict]) -> Dict[int, int]:
+        """Identify noun phrases and return mapping of modifier -> head."""
+        mapping = {}
+        i = 0
+        while i < len(tokens):
+            if tokens[i]['pos'] in ['NN', 'NNS', 'NNP', 'NNPS']:
+                # Found a noun, check if followed by another noun
+                if i + 1 < len(tokens) and tokens[i + 1]['pos'] in ['NN', 'NNS', 'NNP', 'NNPS']:
+                    # Compound: first noun modifies second
+                    mapping[i] = i + 1
+                    i += 1
+                else:
+                    i += 1
+            else:
+                i += 1
+        return mapping
+
+    def _find_root_verb(self, tokens: List[Dict]) -> int:
+        """Find the main verb in the sentence."""
+        # Look for first main verb (VBD, VBP, VBZ, VB)
+        for idx, token in enumerate(tokens):
+            pos = token['pos']
+            if pos in ['VBD', 'VBP', 'VBZ', 'VB']:
+                return idx
+
+        # Fallback: first verb-like POS
+        for idx, token in enumerate(tokens):
+            if token['pos'].startswith('VB'):
+                return idx
+
+        # Last resort: find first noun or return 0
+        for idx, token in enumerate(tokens):
+            if token['pos'].startswith('NN'):
+                return idx
+
+        return 0
+
+    def _find_next_noun(self, tokens: List[Dict], start_idx: int) -> int:
+        """Find the next noun after start_idx."""
+        for idx in range(start_idx + 1, len(tokens)):
+            if tokens[idx]['pos'] in ['NN', 'NNS', 'NNP', 'NNPS']:
+                return idx
+        return -1
 
     def get_tokens(self, sentence: Dict) -> List[Dict]:
         return sentence.get('tokens', [])
