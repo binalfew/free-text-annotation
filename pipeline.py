@@ -34,13 +34,10 @@ class ViolentEventNLPPipeline:
         self.text_cleaner = TextCleaner()
         self.sentence_splitter = SentenceSplitter()
 
-        # Stanford CoreNLP (with lightweight fallback)
+        # Stanford CoreNLP (requires server running)
         corenlp_path = corenlp_config['path']
         memory = corenlp_config.get('memory', '4g')
-        allow_fallback = corenlp_config.get('allow_fallback')
-        if allow_fallback is None:
-            allow_fallback = not Path(corenlp_path).is_absolute()
-        self.corenlp = CoreNLPWrapper(corenlp_path, memory, allow_fallback=allow_fallback)
+        self.corenlp = CoreNLPWrapper(corenlp_path, memory)
         
         # Feature extractors
         self.violence_lexicon = ViolenceLexicon()
@@ -74,114 +71,121 @@ class ViolentEventNLPPipeline:
     def process_article(self, article_text: str, article_id: str = None) -> Dict:
         """
         Process a complete article through the pipeline.
-        
+
         Args:
             article_text: Raw article text
             article_id: Article identifier
-            
+
         Returns:
             Processed article with all annotations
         """
         self.logger.info(f"Processing article: {article_id}")
-        
+
         result = {
             'article_id': article_id,
             'original_text': article_text,
             'sentences': []
         }
-        
+
         try:
             # Step 1: Clean text
             self.logger.debug("Cleaning text...")
             cleaned_text = self.text_cleaner.clean(article_text)
             result['cleaned_text'] = cleaned_text
-            
+
             # Extract metadata
             metadata = self.text_cleaner.extract_metadata(cleaned_text)
             result['metadata'] = metadata
-            
-            # Step 2: Split into sentences
-            self.logger.debug("Splitting sentences...")
-            sentences = self.sentence_splitter.split(cleaned_text)
+
+            # Step 2: Annotate entire article with Stanford CoreNLP
+            # This enables coreference resolution across sentences
+            self.logger.debug("Annotating article with Stanford CoreNLP...")
+            full_annotation = self.corenlp.annotate(cleaned_text)
+
+            # Extract sentences from CoreNLP output
+            sentences = full_annotation.get('sentences', [])
             result['num_sentences'] = len(sentences)
-            
-            # Step 3: Process each sentence
-            for idx, sentence in enumerate(sentences):
-                self.logger.debug(f"Processing sentence {idx+1}/{len(sentences)}")
-                
-                sentence_result = self.process_sentence(sentence, idx)
+
+            # Extract coreference chains if available
+            if 'coref_chains' in full_annotation:
+                result['coref_chains'] = full_annotation['coref_chains']
+                self.logger.debug(f"Extracted {len(full_annotation['coref_chains'])} coreference chains")
+
+            # Process each sentence from CoreNLP
+            for sent_ann in sentences:
+                sent_idx = sent_ann.get('index', 0)
+                sentence_result = self._process_corenlp_sentence(sent_ann, sent_idx)
                 result['sentences'].append(sentence_result)
-            
-            # Step 4: Article-level features
+
+            # Step 3: Article-level features
             result['article_features'] = self.extract_article_features(result)
-            
-            self.logger.info(f"Article processing complete: {len(sentences)} sentences")
-            
+
+            self.logger.info(f"Article processing complete: {len(result['sentences'])} sentences")
+
         except Exception as e:
             self.logger.error(f"Error processing article: {e}")
             result['error'] = str(e)
-        
+
         return result
-    
-    def process_sentence(self, sentence: str, sentence_idx: int) -> Dict:
+
+    def _process_corenlp_sentence(self, sent_ann: Dict, sentence_idx: int) -> Dict:
         """
-        Process a single sentence.
-        
+        Process a sentence annotation that came from Stanford CoreNLP server.
+
         Args:
-            sentence: Sentence text
+            sent_ann: Sentence annotation from Stanford CoreNLP
             sentence_idx: Sentence index in article
-            
+
         Returns:
-            Processed sentence with annotations
+            Processed sentence with all features
         """
+        # Reconstruct sentence text from tokens
+        tokens = sent_ann.get('tokens', [])
+        sentence_text = ' '.join(t.get('word', '') for t in tokens)
+
         result = {
+            'index': sentence_idx,
             'sentence_idx': sentence_idx,
-            'text': sentence
+            'text': sentence_text,
+            'tokens': tokens,
+            'num_tokens': len(tokens)
         }
-        
+
         try:
-            # CoreNLP annotation
-            annotation = self.corenlp.annotate(sentence)
-            
-            if annotation and 'sentences' in annotation:
-                sent_ann = annotation['sentences'][0]
-                
-                # Extract tokens
-                tokens = self.corenlp.get_tokens(sent_ann)
-                result['tokens'] = tokens
-                result['num_tokens'] = len(tokens)
-                
-                # Extract entities
-                entities = self.corenlp.get_entities(sent_ann)
-                
-                # Enhance with African NER
-                enhanced_entities = self.african_ner.enhance_ner(entities, sentence)
-                result['entities'] = enhanced_entities
-                
-                # Extract dependencies
-                dependencies = self.corenlp.get_dependencies(sent_ann)
-                result['dependencies'] = dependencies
-                
-                # Extract features
-                token_words = [t['word'] for t in tokens]
-                
-                # Lexical features
-                lex_features = self.lexical_features.extract_features(token_words)
-                result['lexical_features'] = lex_features
-                
-                # Syntactic features
-                syn_features = self.syntactic_features.extract_features(tokens, dependencies)
-                result['syntactic_features'] = syn_features
-                
-                # Violence indicators
-                result['is_violence_sentence'] = lex_features.get('violence_term_count', 0) > 0
-                
+            # Extract entities
+            entities = self.corenlp.get_entities(sent_ann)
+
+            # Enhance with African NER
+            enhanced_entities = self.african_ner.enhance_ner(entities, sentence_text)
+            result['entities'] = enhanced_entities
+
+            # Extract dependencies
+            dependencies = self.corenlp.get_dependencies(sent_ann)
+            result['dependencies'] = dependencies
+
+            # Store basic dependencies in both formats for compatibility
+            result['basicDependencies'] = sent_ann.get('basicDependencies', [])
+
+            # Extract features
+            token_words = [t['word'] for t in tokens]
+
+            # Lexical features
+            lex_features = self.lexical_features.extract_features(token_words)
+            result['lexical_features'] = lex_features
+
+            # Syntactic features
+            syn_features = self.syntactic_features.extract_features(tokens, dependencies)
+            result['syntactic_features'] = syn_features
+
+            # Violence indicators
+            result['is_violence_sentence'] = lex_features.get('violence_term_count', 0) > 0
+
         except Exception as e:
-            self.logger.error(f"Error processing sentence {sentence_idx}: {e}")
+            self.logger.error(f"Error processing CoreNLP sentence {sentence_idx}: {e}")
             result['error'] = str(e)
-        
+
         return result
-    
+
     def extract_article_features(self, article_result: Dict) -> Dict:
         """
         Extract article-level features.

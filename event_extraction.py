@@ -143,7 +143,7 @@ class FiveW1HExtractor:
         self.ner = african_ner
         self.logger = logging.getLogger(__name__)
     
-    def extract(self, sentence_annotation: Dict, triggers: List[Dict], article_date: Optional[str] = None, article_text: Optional[str] = None) -> List[Dict]:
+    def extract(self, sentence_annotation: Dict, triggers: List[Dict], article_date: Optional[str] = None, article_text: Optional[str] = None, article_annotation: Optional[Dict] = None) -> List[Dict]:
         """
         Extract 5W1H for each trigger in sentence.
 
@@ -152,6 +152,7 @@ class FiveW1HExtractor:
             triggers: List of detected triggers
             article_date: Article publication date for date normalization
             article_text: Full article text for context (e.g., responsibility claims)
+            article_annotation: Full article annotation (for coreference resolution)
 
         Returns:
             List of event extractions (one per trigger)
@@ -171,7 +172,7 @@ class FiveW1HExtractor:
 
             # Extract for this trigger
             extraction['what'] = self._extract_what(trigger, sentence_annotation)
-            extraction['who'] = self._extract_who(trigger, sentence_annotation, article_text)
+            extraction['who'] = self._extract_who(trigger, sentence_annotation, article_text, article_annotation)
             extraction['whom'] = self._extract_whom(trigger, sentence_annotation)
             extraction['where'] = self._extract_where(sentence_annotation)
             extraction['when'] = self._extract_when(sentence_annotation, article_date)
@@ -217,7 +218,7 @@ class FiveW1HExtractor:
         else:
             return 'violence'
     
-    def _extract_who(self, trigger: Dict, sent_ann: Dict, article_text: Optional[str] = None) -> Optional[Dict]:
+    def _extract_who(self, trigger: Dict, sent_ann: Dict, article_text: Optional[str] = None, article_annotation: Optional[Dict] = None) -> Optional[Dict]:
         """
         Extract actor (Who did it).
 
@@ -230,10 +231,19 @@ class FiveW1HExtractor:
 
         trigger_idx = trigger['sentence_index']  # Use sentence_index from trigger
 
+        # APPROACH -1: Use coreference resolution to resolve pronouns
+        # This handles cases like "The group claimed..." → "Al-Shabaab"
+        if article_annotation and 'coref_chains' in article_annotation:
+            coref_actor = self._extract_actor_from_coreference(
+                trigger, sent_ann, article_annotation.get('coref_chains', []), article_annotation
+            )
+            if coref_actor:
+                return coref_actor
+
         # APPROACH 0: Check for "claimed responsibility" patterns in article context
         # This is critical for cases like "Al-Shabaab claimed responsibility for the attack"
         if article_text:
-            responsibility_actor = self._extract_actor_from_responsibility_claim(article_text, entities)
+            responsibility_actor = self._extract_actor_from_responsibility_claim(article_text, entities, article_annotation)
             if responsibility_actor:
                 return responsibility_actor
 
@@ -321,13 +331,119 @@ class FiveW1HExtractor:
 
         return None
 
-    def _extract_actor_from_responsibility_claim(self, article_text: str, entities: List[Dict]) -> Optional[Dict]:
+    def _extract_actor_from_coreference(self, trigger: Dict, sent_ann: Dict, coref_chains: List[Dict], article_annotation: Dict) -> Optional[Dict]:
+        """
+        Extract actor using coreference resolution.
+
+        This resolves pronouns like "the group", "they", "he" to their actual entity mentions.
+
+        Args:
+            trigger: Violence trigger
+            sent_ann: Sentence annotation
+            coref_chains: Coreference chains from Stanford CoreNLP
+            article_annotation: Full article annotation
+
+        Returns:
+            Actor dict or None
+        """
+        dependencies = sent_ann.get('dependencies', sent_ann.get('basicDependencies', []))
+        tokens = sent_ann.get('tokens', [])
+        sentence_index = sent_ann.get('index', 0)
+
+        # Find the subject of the trigger verb
+        trigger_word = trigger.get('word', '').lower()
+        subject_text = None
+        subject_start_idx = None
+        subject_end_idx = None
+
+        for dep in dependencies:
+            if dep.get('dep') in ['nsubj', 'nsubjpass', 'agent']:
+                if dep.get('governor', '').lower() == trigger_word:
+                    subject_text = dep.get('dependent')
+                    # Find token indices for this subject
+                    for idx, token in enumerate(tokens):
+                        if token.get('word', '').lower() == subject_text.lower():
+                            subject_start_idx = idx + 1  # 1-indexed for CoreNLP
+                            subject_end_idx = idx + 2
+                            break
+
+        if not subject_text:
+            return None
+
+        # Check if this subject is a pronoun or generic reference
+        pronouns = ['he', 'she', 'it', 'they', 'the group', 'the organization', 'the militants']
+        is_pronoun = subject_text.lower() in pronouns or subject_text.lower().startswith('the ')
+
+        if not is_pronoun:
+            return None  # Not a coreference case
+
+        # Look for this mention in coreference chains
+        for chain in coref_chains:
+            mentions = chain.get('mentions', [])
+
+            # Find if our subject is in this chain
+            found_in_chain = False
+            for mention in mentions:
+                if mention.get('sentNum') == sentence_index + 1:  # CoreNLP uses 1-indexed sentences
+                    if (mention.get('startIndex') == subject_start_idx and
+                        mention.get('endIndex') == subject_end_idx):
+                        found_in_chain = True
+                        break
+
+            if found_in_chain:
+                # Find the representative mention (usually the most specific/first mention)
+                representative = None
+                for mention in mentions:
+                    if mention.get('isRepresentative'):
+                        representative = mention
+                        break
+
+                # If no representative, use the first specific mention (not pronoun)
+                if not representative:
+                    for mention in mentions:
+                        mention_text = mention.get('text', '')
+                        if mention_text and not mention_text.lower() in pronouns:
+                            representative = mention
+                            break
+
+                if representative:
+                    resolved_text = representative.get('text')
+
+                    # Get all entities from the article to match type
+                    all_entities = []
+                    for sent in article_annotation.get('sentences', []):
+                        all_entities.extend(sent.get('entities', []))
+
+                    # Try to match with an entity
+                    for entity in all_entities:
+                        if entity.get('text', '').lower() == resolved_text.lower():
+                            return {
+                                'text': resolved_text,
+                                'type': entity.get('type', 'ORGANIZATION'),
+                                'metadata': entity.get('metadata', {}),
+                                'from_coreference': True
+                            }
+
+                    # If no entity match, return resolved text
+                    if self._is_likely_actor(resolved_text):
+                        actor_type = self._identify_actor(resolved_text, all_entities)
+                        return {
+                            'text': resolved_text,
+                            'type': actor_type.get('type', 'ORGANIZATION'),
+                            'metadata': actor_type,
+                            'from_coreference': True
+                        }
+
+        return None
+
+    def _extract_actor_from_responsibility_claim(self, article_text: str, entities: List[Dict], article_annotation: Optional[Dict] = None) -> Optional[Dict]:
         """
         Extract actor from responsibility claims like 'X claimed responsibility for the attack'.
 
         Args:
             article_text: Full article text
             entities: List of entities from the article
+            article_annotation: Full article annotation (for coreference resolution)
 
         Returns:
             Actor dict or None
@@ -1067,8 +1183,8 @@ class EventExtractor:
             if not triggers:
                 continue
 
-            # Extract 5W1H for each trigger (pass article_date and article_text)
-            extractions = self.fivew1h_extractor.extract(sentence, triggers, article_date, article_text)
+            # Extract 5W1H for each trigger (pass article_date, article_text, and article_annotation for coreference)
+            extractions = self.fivew1h_extractor.extract(sentence, triggers, article_date, article_text, article_annotation)
 
             for extraction in extractions:
                 # Propagate article-level context to incomplete extractions

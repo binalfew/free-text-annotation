@@ -6,6 +6,84 @@ This guide shows how to run each stage of the pipeline separately to inspect int
 
 ---
 
+## Understanding NLP Annotations
+
+This section explains the linguistic annotations you'll see in Stage 2 (NLP Pipeline) outputs.
+
+### POS Tags (Part-of-Speech)
+
+POS tags identify the grammatical role of each word. We use the Penn Treebank tagset:
+
+#### Noun Tags
+- **NN** = Noun, singular (e.g., "market", "bomber", "attack")
+- **NNS** = Noun, plural (e.g., "vendors", "customers", "civilians")
+- **NNP** = Proper noun, singular (e.g., "Mogadishu", "Friday", "Al-Shabaab")
+- **NNPS** = Proper noun, plural (e.g., "Americans", "Somalis")
+
+#### Verb Tags
+- **VB** = Verb, base form (e.g., "kill", "attack", "occur")
+- **VBD** = Verb, past tense (e.g., "killed", "detonated", "occurred")
+- **VBG** = Verb, gerund/present participle (e.g., "killing", "injuring")
+- **VBN** = Verb, past participle (e.g., "killed", "injured")
+- **VBP** = Verb, present tense (e.g., "attack", "kill")
+- **VBZ** = Verb, 3rd person singular present (e.g., "kills", "attacks")
+
+#### Other Common Tags
+- **DT** = Determiner (e.g., "a", "an", "the")
+- **JJ** = Adjective (e.g., "explosive", "busy", "violent")
+- **CD** = Cardinal number (e.g., "15", "23", "12")
+- **IN** = Preposition (e.g., "at", "in", "during")
+- **RB** = Adverb (e.g., "very", "quickly")
+- **PRP** = Pronoun (e.g., "he", "they", "it")
+
+#### Example from Article 1:
+```
+"A suicide bomber detonated an explosive device"
+ ↓    ↓      ↓        ↓        ↓      ↓       ↓
+DT   NN     NN      VBD      DT     JJ      NN
+```
+
+**Why POS Tags Matter:**
+- Identify **verbs** as potential violence triggers (VBD, VBG, VBN)
+- Identify **nouns** as potential actors or victims (NN, NNS, NNP)
+- Understand sentence structure for dependency parsing
+
+### NER Tags (Named Entity Recognition)
+
+NER tags identify specific named entities in text:
+
+- **PERSON** - Specific individuals (e.g., "John Smith", "Barack Obama")
+- **LOCATION** - Places (e.g., "Mogadishu", "Bakara market", "Somalia")
+- **ORGANIZATION** - Groups/institutions (e.g., "Al-Shabaab", "United Nations")
+- **DATE** - Time expressions (e.g., "Friday", "March 15, 2024")
+- **NUMBER** - Numeric values (e.g., "15", "23")
+- **O** - Outside (not a named entity)
+
+**Important Distinction:**
+- "Al-Shabaab" → **ORGANIZATION** (specific named group)
+- "terrorists" → **O** (common noun, not a named entity)
+- "Mogadishu" → **LOCATION** (specific place)
+- "market" → **LOCATION** or **O** depending on context
+- "vendors" → **O** (generic common noun, not a specific named entity)
+
+#### Example from Article 1, Sentence 1:
+```
+"The attack occurred during peak shopping hours when the market was crowded with vendors and customers."
+
+Tokens:
+- "market" → ner: "LOCATION" (refers to specific "Bakara market")
+- "vendors" → ner: "O" (common noun, not a named entity)
+- "customers" → ner: "O" (common noun, not a named entity)
+```
+
+**Why NER Tags Matter:**
+- Extract **WHO** (actors): PERSON, ORGANIZATION entities
+- Extract **WHOM** (victims): PERSON entities or common nouns like "civilians"
+- Extract **WHERE** (location): LOCATION entities
+- Extract **WHEN** (time): DATE entities
+
+---
+
 ## Quick Test Script
 
 **Run individual stages:**
