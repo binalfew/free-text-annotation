@@ -7,7 +7,7 @@ Run individual stages of the violent event annotation pipeline
 to inspect intermediate results.
 
 Usage:
-    python3 test_pipeline_stages.py --stage [1|2|3|4|5|all]
+    python3 test_pipeline_stages.py --stage [1|2|3|4|all]
     python3 test_pipeline_stages.py --stage 3 --article 2 --verbose
 
 Author: Binalfew Kassa Mekonnen
@@ -281,26 +281,9 @@ def stage3_event_extraction(args, nlp_results=None):
     return all_events
 
 
-def stage4_post_processing(args):
-    """STAGE 4: Post-processing (already integrated in extractor)."""
-    print_separator("STAGE 4: POST-PROCESSING")
-
-    print("NOTE: Post-processing (event merging, filtering, salience) is")
-    print("      integrated into Stage 3 (Event Extraction).")
-    print()
-    print("To see post-processing in action:")
-    print("  1. Run Stage 3 with --verbose")
-    print("  2. Check the logs for:")
-    print("     - 'Merge similar events'")
-    print("     - 'Cluster coreferent events'")
-    print("     - 'Filter by salience'")
-    print()
-    print("The output from Stage 3 is already post-processed!")
-
-
-def stage5_csv_output(args, events=None):
-    """STAGE 5: CSV output generation."""
-    print_separator("STAGE 5: CSV OUTPUT")
+def stage4_csv_output(args, events=None):
+    """STAGE 4: CSV output generation."""
+    print_separator("STAGE 4: CSV OUTPUT")
 
     # Load events if not provided
     if events is None:
@@ -413,11 +396,8 @@ def run_all_stages(args):
     # Stage 3
     events = stage3_event_extraction(args, nlp_results)
 
-    # Stage 4 (message only, integrated in Stage 3)
-    stage4_post_processing(args)
-
-    # Stage 5
-    stage5_csv_output(args, events)
+    # Stage 4
+    stage4_csv_output(args, events)
 
     print_separator("ALL STAGES COMPLETE")
     print("✓ Check the output/ folder for intermediate results")
@@ -442,8 +422,8 @@ Examples:
     )
 
     parser.add_argument('--stage', type=str, required=True,
-                        choices=['1', '2', '3', '4', '5', 'all'],
-                        help='Which stage to test (1-5 or all)')
+                        choices=['1', '2', '3', '4', 'all'],
+                        help='Which stage to test (1-4 or all)')
 
     parser.add_argument('--article', type=int, choices=[1, 2, 3, 4, 5],
                         help='Test specific article number (1-5)')
@@ -465,9 +445,7 @@ Examples:
         elif args.stage == '3':
             stage3_event_extraction(args)
         elif args.stage == '4':
-            stage4_post_processing(args)
-        elif args.stage == '5':
-            stage5_csv_output(args)
+            stage4_csv_output(args)
         elif args.stage == 'all':
             run_all_stages(args)
 
