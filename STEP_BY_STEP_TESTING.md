@@ -269,8 +269,10 @@ EVENT EXTRACTED:
   "completeness": 1.00
 }
 
-Total events extracted: 2
+Total events extracted: 1
 ```
+
+**Note:** Article 1 extracts 1 event (after post-processing filters out background events)
 
 **Manual Test (Python):**
 ```python

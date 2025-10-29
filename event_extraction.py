@@ -700,17 +700,27 @@ class FiveW1HExtractor:
         """Check if text looks like an actor/perpetrator."""
         text_lower = text.lower()
 
-        # Known actor indicators
+        # Known actor indicators (including known organizations)
         actor_keywords = {
             'group', 'force', 'forces', 'army', 'military', 'police', 'officer', 'officers',
             'soldier', 'soldiers', 'troop', 'troops', 'militant', 'militants', 'fighter', 'fighters',
             'rebel', 'rebels', 'insurgent', 'insurgents', 'terrorist', 'terrorists',
             'gang', 'gunman', 'gunmen', 'attacker', 'attackers', 'bomber',
             'shabaab', 'boko', 'haram', 'aqim', 'isis', 'al-qaeda', 'al-shabaab',
-            'supporters', 'protesters', 'demonstrators', 'community', 'militia'
+            'supporters', 'protesters', 'demonstrators', 'community', 'communities', 'militia', 'militias',
+            # Common African ethnic/communal groups
+            'hema', 'lendu', 'hutu', 'tutsi', 'fulani', 'hausa', 'yoruba', 'igbo',
+            'nuer', 'dinka', 'shona', 'ndebele', 'zulu', 'xhosa',
+            # Other actor types
+            'herders', 'farmers', 'pastoralists', 'nomads', 'tribesmen'
         }
 
-        # CRITICAL: Exclude obvious non-actors
+        # CRITICAL: Check actor keywords FIRST (before non-actor check)
+        # This prevents false rejections like "a" in "al-shabaab"
+        if any(keyword in text_lower for keyword in actor_keywords):
+            return True
+
+        # CRITICAL: Exclude obvious non-actors (using word boundaries)
         non_actor_indicators = {
             # Places
             'market', 'markets', 'building', 'buildings', 'town', 'city', 'village',
@@ -718,26 +728,30 @@ class FiveW1HExtractor:
             'restaurant', 'hotel', 'mosque', 'church', 'school', 'hospital',
             # Times/descriptive words
             'morning', 'afternoon', 'evening', 'night', 'day', 'week', 'month',
-            'violent', 'recent', 'deadly', 'latest', 'ongoing',
-            # Articles/determiners
-            'the', 'a', 'an', 'this', 'that', 'these', 'those',
-            # Prepositions (shouldn't appear alone)
-            'during', 'after', 'before', 'in', 'at', 'on', 'by',
-            # Numbers
-            '1', '2', '3', '4', '5', '6', '7', '8', '9', '0'
+            'violent', 'recent', 'deadly', 'latest', 'ongoing'
         }
 
-        # If it's a non-actor indicator, reject immediately
+        # Articles/determiners and single letters (as complete words only)
+        single_word_non_actors = {
+            'the', 'a', 'an', 'this', 'that', 'these', 'those',
+            'during', 'after', 'before', 'in', 'at', 'on', 'by'
+        }
+
+        # Check if text is EXACTLY one of the single-word non-actors
+        if text_lower in single_word_non_actors:
+            return False
+
+        # Check for non-actor indicators (substring match)
         if any(non_actor in text_lower for non_actor in non_actor_indicators):
             return False
 
-        # If it's less than 2 characters (like "The"), reject
-        if len(text.strip()) < 2:
+        # Reject if contains numbers (but not as part of a larger name)
+        if any(char.isdigit() for char in text) and len(text) < 5:
             return False
 
-        # If it contains actor keywords, accept
-        if any(keyword in text_lower for keyword in actor_keywords):
-            return True
+        # If it's less than 2 characters, reject
+        if len(text.strip()) < 2:
+            return False
 
         # If it's a proper noun (starts with capital) and has multiple words, might be an organization
         words = text.split()
@@ -1036,6 +1050,7 @@ class EventExtractor:
 
         sentences = article_annotation.get('sentences', [])
         article_text = article_annotation.get('cleaned_text', article_annotation.get('original_text', ''))
+        article_id = article_annotation.get('article_id', 'unknown')
 
         # Extract article-level context
         article_context = self._extract_article_context(article_annotation)
@@ -1059,10 +1074,15 @@ class EventExtractor:
                 # Propagate article-level context to incomplete extractions
                 extraction = self._propagate_context(extraction, article_context, sentence)
 
+                # Ensure trigger has correct sentence_index
+                trigger = extraction['trigger']
+                trigger['sentence_index'] = sent_idx
+
                 event = {
+                    'article_id': article_id,
                     'sentence_index': sent_idx,
                     'sentence_text': sentence.get('text', ''),
-                    'trigger': extraction['trigger'],
+                    'trigger': trigger,
                     'who': extraction['who'],
                     'what': extraction['what'],
                     'whom': extraction['whom'],
@@ -1088,19 +1108,24 @@ class EventExtractor:
 
         # First pass: Detect and split reciprocal violence events
         events = self._detect_reciprocal_violence(events, sentences)
+        self.logger.debug(f"After reciprocal violence detection: {len(events)} events")
 
         # Second pass: Merge events within same/adjacent sentences
         events = self._merge_similar_events(events)
+        self.logger.debug(f"After merge similar events: {len(events)} events")
 
         # Third pass: CLUSTER events across entire article (coreference resolution)
         events = self._cluster_coreferent_events(events, article_annotation)
+        self.logger.debug(f"After cluster coreferent events: {len(events)} events")
 
         # Fourth pass: Filter by salience (keep only main newsworthy events, not background context)
         events = self._filter_by_salience(events, article_annotation)
+        self.logger.debug(f"After salience filtering: {len(events)} events")
 
         # Filter out very low confidence events
         # Increase threshold to reduce noise
         events = [e for e in events if e['confidence'] >= 0.30]
+        self.logger.debug(f"After confidence filtering (>= 0.30): {len(events)} events")
 
         return events
     
@@ -1162,19 +1187,28 @@ class EventExtractor:
         import re
 
         expanded_events = []
+        processed_sentences = set()  # Track sentences that have been split into reciprocal pairs
 
         for event in events:
             sentence_text = event.get('sentence_text', '')
+            sentence_idx = event.get('sentence_index')
             trigger_lemma = event.get('trigger', {}).get('lemma', '')
 
+            # If this sentence already created a reciprocal pair, don't create another
+            if sentence_idx in processed_sentences:
+                expanded_events.append(event)
+                continue
+
             # Check if this is a reciprocal violence pattern
+            # Note: Use (.+?) to match "any text" not [^and] which means "any char except a, n, d"
             reciprocal_patterns = [
-                r'clash(?:es)?\s+between\s+([^and]+?)\s+and\s+([^,\.]+)',
-                r'violence\s+between\s+([^and]+?)\s+and\s+([^,\.]+)',
-                r'fight(?:ing)?\s+between\s+([^and]+?)\s+and\s+([^,\.]+)',
-                r'conflict\s+between\s+([^and]+?)\s+and\s+([^,\.]+)',
-                r'([^,]+?)\s+(?:and|vs|versus)\s+([^,]+?)\s+clash(?:ed)?',
-                r'([^,]+?)\s+(?:and|vs|versus)\s+([^,]+?)\s+fought',
+                r'between\s+(.+?)\s+and\s+(.+?)(?:\s+in|\s+communities|\s+have|,)',
+                r'clash(?:es)?\s+between\s+(.+?)\s+and\s+(.+?)(?:\s+in|\s+communities|,)',
+                r'violence\s+between\s+(.+?)\s+and\s+(.+?)(?:\s+in|\s+communities|,)',
+                r'fight(?:ing)?\s+between\s+(.+?)\s+and\s+(.+?)(?:\s+in|\s+communities|,)',
+                r'conflict\s+between\s+(.+?)\s+and\s+(.+?)(?:\s+in|\s+communities|,)',
+                r'([A-Z]\w+(?:\s+\w+)?)\s+(?:and|vs|versus)\s+([A-Z]\w+(?:\s+\w+)?)\s+clash(?:ed)?',
+                r'([A-Z]\w+(?:\s+\w+)?)\s+(?:and|vs|versus)\s+([A-Z]\w+(?:\s+\w+)?)\s+fought',
             ]
 
             matched = False
@@ -1185,7 +1219,7 @@ class EventExtractor:
                     actor2_text = match.group(2).strip()
 
                     # Validate both are likely actors
-                    if self._is_likely_actor(actor1_text) and self._is_likely_actor(actor2_text):
+                    if self.fivew1h_extractor._is_likely_actor(actor1_text) and self.fivew1h_extractor._is_likely_actor(actor2_text):
                         # Create two events - one from each perspective
 
                         # Event 1: Actor1 -> Actor2
@@ -1228,6 +1262,7 @@ class EventExtractor:
 
                         expanded_events.append(event1)
                         expanded_events.append(event2)
+                        processed_sentences.add(sentence_idx)  # Mark sentence as processed
                         matched = True
                         break
 
@@ -1413,9 +1448,14 @@ class EventExtractor:
         if not events:
             return events
 
-        # Calculate salience score for each event
+        # SPECIAL CASE: Keep all reciprocal violence events together
+        # Reciprocal violence (e.g., "Hema vs Lendu") should always keep both perspectives
+        reciprocal_events = [e for e in events if e.get('reciprocal_violence')]
+        non_reciprocal_events = [e for e in events if not e.get('reciprocal_violence')]
+
+        # Calculate salience score for each non-reciprocal event
         scored_events = []
-        for event in events:
+        for event in non_reciprocal_events:
             score = self._calculate_salience_score(event, article_annotation)
             scored_events.append((event, score))
             # Debug logging
@@ -1429,7 +1469,7 @@ class EventExtractor:
         # High-salience events are main news (score >= 7)
         # Low-salience events are background context (score < 7)
         # INCREASED from 5 to 7 for more aggressive filtering
-        salient_events = []
+        salient_events = reciprocal_events.copy()  # Always keep reciprocal events
         for event, score in scored_events:
             if score >= 7:
                 salient_events.append(event)
@@ -1735,6 +1775,12 @@ class EventExtractor:
         Returns:
             True if events likely describe same incident
         """
+        # CRITICAL: Never merge reciprocal violence events with anything
+        # Reciprocal violence (e.g., "Hema vs Lendu") are intentionally separate events
+        # and should not be merged with other events at all
+        if event1.get('reciprocal_violence') or event2.get('reciprocal_violence'):
+            return False
+
         score = 0
 
         # Signal 1: Same actor (strong signal)
