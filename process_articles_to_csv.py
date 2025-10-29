@@ -157,6 +157,11 @@ def process_articles_to_csv(articles_file, output_file):
                 'how_weapons': ', '.join(event.get('how', {}).get('weapons', [])) if event.get('how') else '',
                 'how_tactics': ', '.join(event.get('how', {}).get('tactics', [])) if event.get('how') else '',
 
+                # Taxonomy
+                'taxonomy_l1': event.get('taxonomy_l1', ''),
+                'taxonomy_l2': event.get('taxonomy_l2', ''),
+                'taxonomy_l3': event.get('taxonomy_l3', ''),
+
                 # Quality metrics
                 'confidence': f"{event.get('confidence', 0):.2f}",
                 'completeness': f"{event.get('completeness', 0):.2f}",
@@ -182,6 +187,7 @@ def process_articles_to_csv(articles_file, output_file):
         'where_location', 'where_type',
         'when_time', 'when_type', 'when_normalized',
         'how_weapons', 'how_tactics',
+        'taxonomy_l1', 'taxonomy_l2', 'taxonomy_l3',
         'confidence', 'completeness'
     ]
 

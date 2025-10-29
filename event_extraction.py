@@ -237,6 +237,12 @@ class FiveW1HExtractor:
             if responsibility_actor:
                 return responsibility_actor
 
+        # APPROACH 0.5: Try to extract from title/first sentence patterns
+        # Patterns like "Police officers killed...", "Armed gang robbed..."
+        title_actor = self._extract_actor_from_title_pattern(text, entities)
+        if title_actor:
+            return title_actor
+
         # Approach 1: Find subject dependency (nsubj, nsubjpass, agent)
         actor_idx = None
         for dep in dependencies:
@@ -365,7 +371,54 @@ class FiveW1HExtractor:
                     }
 
         return None
-    
+
+    def _extract_actor_from_title_pattern(self, sentence_text: str, entities: List[Dict]) -> Optional[Dict]:
+        """
+        Extract actor from title/sentence patterns.
+
+        Handles patterns like:
+        - "Police officers fired..."
+        - "Armed gang robbed..."
+        - "Three officers killed..."
+        - "A suicide bomber detonated..."
+
+        Args:
+            sentence_text: Sentence text
+            entities: Entities from sentence
+
+        Returns:
+            Actor dict or None
+        """
+        import re
+
+        # Pattern 1: [Number] + [Actor noun] + [verb]
+        # Examples: "Three police officers", "A suicide bomber", "Six gunmen"
+        patterns = [
+            r'^((?:Three|Four|Five|Six|Seven|Eight|Nine|Ten|A|An)\s+[^,\.]+?(?:officers?|police|gunmen|gang|group|militants?|soldiers?|fighters?|bombers?|attackers?))',
+            r'^([A-Z][a-z]+\s+(?:officers?|police|gunmen|gang|group|militants?|soldiers?|fighters?|bombers?|attackers?))',
+            r'((?:police|military|security)\s+(?:officers?|forces?|personnel))',
+            r'(armed\s+gang)',
+            r'(suicide\s+bomber)',
+            r'([A-Z][a-z]+\s+community)',  # For ethnic communities
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, sentence_text, re.IGNORECASE)
+            if match:
+                potential_actor = match.group(1).strip()
+
+                # Validate this is likely an actor
+                if self._is_likely_actor(potential_actor):
+                    actor_type = self._identify_actor(potential_actor, entities)
+                    return {
+                        'text': potential_actor,
+                        'type': actor_type.get('type', 'unknown'),
+                        'metadata': actor_type,
+                        'from_title_pattern': True
+                    }
+
+        return None
+
     def _extract_whom(self, trigger: Dict, sent_ann: Dict) -> Optional[Dict]:
         """
         Extract victim (Whom it affected).
@@ -947,11 +1000,11 @@ class EventExtractor:
     """
     Complete event extraction system.
     """
-    
+
     def __init__(self, violence_lexicon, african_ner):
         """
         Initialize event extractor.
-        
+
         Args:
             violence_lexicon: ViolenceLexicon instance
             african_ner: AfricanNER instance
@@ -959,6 +1012,14 @@ class EventExtractor:
         self.trigger_detector = EventTriggerDetector(violence_lexicon)
         self.fivew1h_extractor = FiveW1HExtractor(african_ner)
         self.logger = logging.getLogger(__name__)
+
+        # Initialize taxonomy classifier
+        try:
+            from taxonomy_classifier import TaxonomyClassifier
+            self.taxonomy_classifier = TaxonomyClassifier()
+        except ImportError:
+            self.logger.warning("TaxonomyClassifier not available")
+            self.taxonomy_classifier = None
     
     def extract_events(self, article_annotation: Dict, article_date: Optional[str] = None) -> List[Dict]:
         """
@@ -1012,15 +1073,29 @@ class EventExtractor:
                     'completeness': self._calculate_completeness(extraction)
                 }
 
+                # Add taxonomy classification
+                if self.taxonomy_classifier:
+                    taxonomy_l1, taxonomy_l2, taxonomy_l3 = self.taxonomy_classifier.classify(event)
+                    event['taxonomy_l1'] = taxonomy_l1
+                    event['taxonomy_l2'] = taxonomy_l2
+                    event['taxonomy_l3'] = taxonomy_l3
+                else:
+                    event['taxonomy_l1'] = ''
+                    event['taxonomy_l2'] = ''
+                    event['taxonomy_l3'] = ''
+
                 events.append(event)
 
-        # First pass: Merge events within same/adjacent sentences
+        # First pass: Detect and split reciprocal violence events
+        events = self._detect_reciprocal_violence(events, sentences)
+
+        # Second pass: Merge events within same/adjacent sentences
         events = self._merge_similar_events(events)
 
-        # Second pass: CLUSTER events across entire article (coreference resolution)
+        # Third pass: CLUSTER events across entire article (coreference resolution)
         events = self._cluster_coreferent_events(events, article_annotation)
 
-        # Third pass: Filter by salience (keep only main newsworthy events, not background context)
+        # Fourth pass: Filter by salience (keep only main newsworthy events, not background context)
         events = self._filter_by_salience(events, article_annotation)
 
         # Filter out very low confidence events
@@ -1068,6 +1143,99 @@ class EventExtractor:
 
         # Ensure score is between 0 and 1
         return round(min(score, 1.0), 2)
+
+    def _detect_reciprocal_violence(self, events: List[Dict], sentences: List[Dict]) -> List[Dict]:
+        """
+        Detect and split reciprocal violence events.
+
+        Patterns like "clashes between X and Y" should become 2 events:
+        - Event 1: X (actor) -> Y (victim)
+        - Event 2: Y (actor) -> X (victim)
+
+        Args:
+            events: List of extracted events
+            sentences: Article sentences
+
+        Returns:
+            Expanded event list with reciprocal violence split
+        """
+        import re
+
+        expanded_events = []
+
+        for event in events:
+            sentence_text = event.get('sentence_text', '')
+            trigger_lemma = event.get('trigger', {}).get('lemma', '')
+
+            # Check if this is a reciprocal violence pattern
+            reciprocal_patterns = [
+                r'clash(?:es)?\s+between\s+([^and]+?)\s+and\s+([^,\.]+)',
+                r'violence\s+between\s+([^and]+?)\s+and\s+([^,\.]+)',
+                r'fight(?:ing)?\s+between\s+([^and]+?)\s+and\s+([^,\.]+)',
+                r'conflict\s+between\s+([^and]+?)\s+and\s+([^,\.]+)',
+                r'([^,]+?)\s+(?:and|vs|versus)\s+([^,]+?)\s+clash(?:ed)?',
+                r'([^,]+?)\s+(?:and|vs|versus)\s+([^,]+?)\s+fought',
+            ]
+
+            matched = False
+            for pattern in reciprocal_patterns:
+                match = re.search(pattern, sentence_text, re.IGNORECASE)
+                if match:
+                    actor1_text = match.group(1).strip()
+                    actor2_text = match.group(2).strip()
+
+                    # Validate both are likely actors
+                    if self._is_likely_actor(actor1_text) and self._is_likely_actor(actor2_text):
+                        # Create two events - one from each perspective
+
+                        # Event 1: Actor1 -> Actor2
+                        event1 = event.copy()
+                        event1['who'] = {
+                            'text': actor1_text,
+                            'type': 'communal',  # Default for inter-community violence
+                            'metadata': {}
+                        }
+                        event1['whom'] = {
+                            'text': actor2_text,
+                            'type': 'civilian',
+                            'deaths': event.get('whom', {}).get('deaths'),
+                            'injuries': event.get('whom', {}).get('injuries')
+                        }
+                        event1['reciprocal_violence'] = True
+                        event1['reciprocal_pair'] = 1
+
+                        # Event 2: Actor2 -> Actor1
+                        event2 = event.copy()
+                        event2['who'] = {
+                            'text': actor2_text,
+                            'type': 'communal',
+                            'metadata': {}
+                        }
+                        event2['whom'] = {
+                            'text': actor1_text,
+                            'type': 'civilian',
+                            'deaths': None,  # Casualties split between events
+                            'injuries': None
+                        }
+                        event2['reciprocal_violence'] = True
+                        event2['reciprocal_pair'] = 2
+
+                        # Recalculate confidence and completeness for both
+                        event1['confidence'] = self._calculate_confidence(event1)
+                        event1['completeness'] = self._calculate_completeness(event1)
+                        event2['confidence'] = self._calculate_confidence(event2)
+                        event2['completeness'] = self._calculate_completeness(event2)
+
+                        expanded_events.append(event1)
+                        expanded_events.append(event2)
+                        matched = True
+                        break
+
+            # If no reciprocal pattern matched, keep original event
+            if not matched:
+                expanded_events.append(event)
+
+        return expanded_events
 
     def _calculate_completeness(self, extraction: Dict) -> float:
         """
