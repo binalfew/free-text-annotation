@@ -129,14 +129,19 @@ class TaxonomyClassifier:
     def _classify_level1(self, actor_type: str, actor_text: str, victim_type: str, trigger: str) -> str:
         """Classify Level 1 (high-level category)."""
 
-        # State Violence Against Civilians
-        state_indicators = ['state', 'police', 'military', 'soldier', 'officer', 'security force']
-        if any(ind in actor_text for ind in state_indicators):
-            if victim_type == 'civilian':
+        # State Violence Against Civilians - CHECK THIS FIRST
+        # This must come before other checks to catch police/military violence
+        state_indicators = ['state', 'police', 'military', 'soldier', 'officer', 'officers', 'security force', 'security forces']
+        if any(ind in actor_text for ind in state_indicators) or actor_type == 'state':
+            # State violence against civilians
+            if victim_type == 'civilian' or 'civilian' in actor_text.lower():
                 return 'State Violence Against Civilians'
+            # If state vs state (rare), still classify as state violence
+            return 'State Violence Against Civilians'
 
-        # Criminal Violence
-        criminal_indicators = ['gang', 'robber', 'bandit', 'criminal']
+        # Criminal Violence - CHECK BEFORE POLITICAL VIOLENCE
+        # This must come before political violence to catch robberies
+        criminal_indicators = ['gang', 'robber', 'bandit', 'criminal', 'armed gang', 'heavily armed gang']
         if actor_type == 'criminal' or any(ind in actor_text for ind in criminal_indicators):
             return 'Criminal Violence'
 
@@ -147,13 +152,13 @@ class TaxonomyClassifier:
             return 'Political Violence'
 
         # Communal Violence
-        communal_indicators = ['community', 'ethnic', 'tribal', 'clan']
+        communal_indicators = ['community', 'communities', 'ethnic', 'tribal', 'clan']
         if actor_type == 'communal' or any(ind in actor_text for ind in communal_indicators):
             return 'Communal Violence'
 
-        # Election violence indicators
-        election_indicators = ['protest', 'election', 'opposition', 'demonstrator']
-        if any(ind in actor_text for ind in election_indicators):
+        # Election violence indicators - but only if NOT state actor
+        election_indicators = ['protest', 'election', 'opposition', 'demonstrator', 'supporter', 'supporters']
+        if any(ind in actor_text for ind in election_indicators) and actor_type != 'state':
             return 'Political Violence'
 
         # Default to Political Violence for unknown armed actors
@@ -182,8 +187,10 @@ class TaxonomyClassifier:
 
         elif level1 == 'State Violence Against Civilians':
             # Check for repression of protests (check victim text and sentence)
-            protest_indicators = ['protest', 'demonstrator', 'rally', 'opposition supporter']
-            if any(ind in victim_text or ind in sentence_text for ind in protest_indicators):
+            # Also check if actor text mentions protesters being targeted
+            protest_indicators = ['protest', 'demonstrator', 'rally', 'opposition supporter', 'protesters', 'demonstrators', 'students']
+            victim_or_sentence_text = (victim_text + ' ' + sentence_text).lower()
+            if any(ind in victim_or_sentence_text for ind in protest_indicators):
                 return 'State Repression of Protests'
 
             # Default to Extrajudicial Killings
@@ -216,8 +223,10 @@ class TaxonomyClassifier:
 
         elif level1 == 'Criminal Violence':
             # Check for armed robbery (check sentence context too)
-            robbery_indicators = ['rob', 'robbery', 'bank', 'stole', 'loot', 'robbed']
-            if any(ind in trigger or ind in actor_text or ind in sentence_text for ind in robbery_indicators):
+            # CRITICAL: Check both trigger and sentence text for robbery indicators
+            robbery_indicators = ['rob', 'robbery', 'bank', 'stole', 'loot', 'robbed', 'robbing', 'robs']
+            combined_text = (trigger + ' ' + actor_text + ' ' + sentence_text).lower()
+            if any(ind in combined_text for ind in robbery_indicators):
                 return 'Armed Robbery/Banditry'
 
             # Check for kidnapping

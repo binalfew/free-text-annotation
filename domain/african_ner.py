@@ -30,7 +30,9 @@ class AfricanNER:
             'Sudan': {'type': 'COUNTRY', 'region': 'North Africa'},
             'South Sudan': {'type': 'COUNTRY', 'region': 'East Africa'},
             'DRC': {'type': 'COUNTRY', 'region': 'Central Africa', 'full_name': 'Democratic Republic of Congo'},
+            'Democratic Republic of Congo': {'type': 'COUNTRY', 'region': 'Central Africa'},
             'CAR': {'type': 'COUNTRY', 'region': 'Central Africa', 'full_name': 'Central African Republic'},
+            'Senegal': {'type': 'COUNTRY', 'region': 'West Africa'},
             
             # Major cities
             'Mogadishu': {'type': 'CITY', 'country': 'Somalia'},
@@ -41,12 +43,18 @@ class AfricanNER:
             'Gao': {'type': 'CITY', 'country': 'Mali'},
             'Kidal': {'type': 'CITY', 'country': 'Mali'},
             'Bamako': {'type': 'CITY', 'country': 'Mali'},
+            'Beni': {'type': 'CITY', 'country': 'Democratic Republic of Congo'},
+            'Dakar': {'type': 'CITY', 'country': 'Senegal'},
+            'Kainama': {'type': 'CITY', 'country': 'Democratic Republic of Congo'},
+            'Westlands': {'type': 'CITY', 'country': 'Kenya'},
             
             # States/Provinces
             'Borno State': {'type': 'STATE', 'country': 'Nigeria'},
             'Adamawa State': {'type': 'STATE', 'country': 'Nigeria'},
             'Oromia': {'type': 'REGION', 'country': 'Ethiopia'},
             'Tigray': {'type': 'REGION', 'country': 'Ethiopia'},
+            'North Kivu': {'type': 'REGION', 'country': 'Democratic Republic of Congo'},
+            'Lower Shabelle': {'type': 'REGION', 'country': 'Somalia'},
         }
         
         if path:

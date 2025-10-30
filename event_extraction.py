@@ -189,14 +189,15 @@ class FiveW1HExtractor:
         Returns:
             Event type information
         """
+        sentence_text = sent_ann.get('text', '')
         return {
             'type': 'violence',
             'trigger_word': trigger['word'],
             'trigger_lemma': trigger['lemma'],
-            'preliminary_type': self._classify_event_type(trigger['lemma'])
+            'preliminary_type': self._classify_event_type(trigger['lemma'], sentence_text)
         }
     
-    def _classify_event_type(self, trigger_lemma: str) -> str:
+    def _classify_event_type(self, trigger_lemma: str, sentence_text: str = '') -> str:
         """Preliminary event classification from trigger."""
         # Map trigger to event type
         killing_verbs = {'kill', 'murder', 'assassinate', 'execute', 'massacre', 'slay'}
@@ -204,11 +205,17 @@ class FiveW1HExtractor:
         shooting_verbs = {'shoot', 'fire', 'gun'}
         kidnap_verbs = {'kidnap', 'abduct', 'seize', 'capture'}
         attack_verbs = {'attack', 'assault', 'raid', 'storm', 'ambush'}
+        robbery_verbs = {'rob', 'robbery', 'loot', 'steal', 'stole'}
+        
+        # Also check sentence context for robbery indicators
+        sentence_lower = sentence_text.lower() if sentence_text else ''
         
         if trigger_lemma in killing_verbs:
             return 'killing'
         elif trigger_lemma in bombing_verbs:
             return 'bombing'
+        elif trigger_lemma in robbery_verbs or 'rob' in sentence_lower or 'robbed' in sentence_lower or 'robbery' in sentence_lower:
+            return 'robbery'
         elif trigger_lemma in shooting_verbs:
             return 'shooting'
         elif trigger_lemma in kidnap_verbs:
@@ -656,15 +663,40 @@ class FiveW1HExtractor:
         # Get actor and victim names to exclude from location candidates
         actor_name = actor.get('text', '').lower() if actor else ''
         victim_name = victim.get('text', '').lower() if victim else ''
-        exclude_names = {actor_name, victim_name} - {''}  # Remove empty strings
+        
+        # CRITICAL FIX: Also exclude common ethnic/communal group names that might be confused with locations
+        # Extract base names (remove words like "community", "communities", "herders", "farmers")
+        import re
+        actor_base = re.sub(r'\s+(?:community|communities|herders?|farmers?|pastoralists?|people|members?|supporters?|officers?|forces?|soldiers?)\b', '', actor_name, flags=re.IGNORECASE).strip()
+        victim_base = re.sub(r'\s+(?:community|communities|herders?|farmers?|pastoralists?|people|members?|supporters?|officers?|forces?|soldiers?)\b', '', victim_name, flags=re.IGNORECASE).strip()
+        
+        # Common ethnic group names that should NOT be treated as locations
+        ethnic_group_names = {'hema', 'lendu', 'hutu', 'tutsi', 'fulani', 'hausa', 'yoruba', 'igbo', 'nuer', 'dinka', 'shona', 'ndebele', 'zulu', 'xhosa'}
+        
+        exclude_names = {actor_name, victim_name, actor_base, victim_base} - {''}  # Remove empty strings
+        exclude_names.update(ethnic_group_names)  # Add ethnic group names to exclusion list
 
-        # Find location entities, excluding actor/victim names
+        # Find location entities, excluding actor/victim names and ethnic groups
         locations = []
         for e in entities:
             if e.get('type') == 'LOCATION':
                 location_text = e.get('text', '').lower()
-                # Exclude if it matches any of the actor/victim names
-                if not any(location_text in name or name in location_text for name in exclude_names):
+                # Exclude if it matches any of the actor/victim names or ethnic groups
+                # CRITICAL: Check exact match or substring match more carefully
+                should_exclude = False
+                for exclude_name in exclude_names:
+                    if exclude_name and (location_text == exclude_name or location_text in exclude_name or exclude_name in location_text):
+                        # Double-check: if it's a known location (e.g., "Beni" is a real city), don't exclude
+                        # Only exclude if it's clearly an ethnic group name
+                        if location_text in ethnic_group_names:
+                            should_exclude = True
+                            break
+                        # If exclude_name is part of location_text but location_text is longer, it might be a real location
+                        # e.g., "Hema community" vs "Hema" - exclude "Hema" but not "Hema community" if it's a location
+                        if exclude_name == location_text:  # Exact match - definitely exclude
+                            should_exclude = True
+                            break
+                if not should_exclude:
                     locations.append(e)
 
         if locations:
@@ -713,9 +745,11 @@ class FiveW1HExtractor:
         Extract time (When it happened).
 
         Strategy: Find DATE/TIME entities and temporal expressions
+        Prefers article metadata date when sentence dates are clearly in different contexts (e.g., postponed election dates)
         """
         entities = sent_ann.get('entities', [])
         tokens = sent_ann.get('tokens', [])
+        sentence_text = sent_ann.get('text', '').lower()
 
         # Import date normalizer
         try:
@@ -729,6 +763,23 @@ class FiveW1HExtractor:
 
         if dates:
             date_text = dates[0]['text']
+            
+            # CRITICAL FIX: Check if this date is mentioned in a different context
+            # e.g., "originally scheduled for February 25th" should not override article date
+            context_indicators = ['originally', 'scheduled', 'postponed', 'planned', 'intended', 'originally scheduled', 'was scheduled']
+            is_contextual_date = any(indicator in sentence_text for indicator in context_indicators)
+            
+            # If this date is in a different context and we have article_date, prefer article_date
+            if is_contextual_date and article_date and normalizer:
+                # Extract date from article_date metadata
+                normalized_article_date = normalizer.normalize_date(article_date)
+                if normalized_article_date:
+                    return {
+                        'text': article_date,
+                        'type': 'INFERRED',
+                        'normalized': normalized_article_date
+                    }
+            
             normalized = None
             if normalizer:
                 normalized = normalizer.normalize_date(date_text, article_date)
@@ -1721,11 +1772,32 @@ class EventExtractor:
         Returns:
             Enhanced extraction
         """
-        # Propagate location if missing
-        if not extraction.get('where') and article_context['locations']:
-            # Use the first (usually most prominent) location
-            extraction['where'] = article_context['locations'][0].copy()
-            extraction['where']['type'] = 'INFERRED'
+        # Propagate location if missing OR if current location is invalid (ethnic group name)
+        ethnic_group_names = {'hema', 'lendu', 'hutu', 'tutsi', 'fulani', 'hausa', 'yoruba', 'igbo', 'nuer', 'dinka', 'shona', 'ndebele', 'zulu', 'xhosa'}
+        current_location = extraction.get('where', {})
+        current_location_text = current_location.get('text', '').lower() if current_location else ''
+        
+        # Check if current location is invalid (ethnic group name)
+        is_invalid_location = current_location_text in ethnic_group_names
+        
+        if (not extraction.get('where') or is_invalid_location) and article_context['locations']:
+            # Filter out locations that are actually actor/victim names or ethnic groups
+            actor_name = extraction.get('who', {}).get('text', '').lower() if extraction.get('who') else ''
+            victim_name = extraction.get('whom', {}).get('text', '').lower() if extraction.get('whom') else ''
+            
+            valid_locations = []
+            for loc in article_context['locations']:
+                loc_text = loc.get('text', '').lower()
+                # Exclude if it matches actor/victim or ethnic group names
+                if (loc_text not in ethnic_group_names and 
+                    loc_text != actor_name and loc_text != victim_name and
+                    actor_name not in loc_text and victim_name not in loc_text):
+                    valid_locations.append(loc)
+            
+            # Use the first valid location
+            if valid_locations:
+                extraction['where'] = valid_locations[0].copy()
+                extraction['where']['type'] = 'INFERRED'
 
         # Propagate time if missing
         if not extraction.get('when') and article_context['dates']:
