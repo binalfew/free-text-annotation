@@ -87,8 +87,8 @@ def stage2_nlp_pipeline(args, articles=None):
     if articles is None:
         articles = parse_articles('articles.md')
 
-    # Filter to specific article if requested
-    if args.article:
+    # Filter to specific article if requested (only if not already filtered)
+    if args.article and len(articles) > 1:
         articles = [articles[args.article - 1]]
         print(f"Processing article {args.article} only\n")
 
@@ -164,7 +164,7 @@ def stage3_event_extraction(args, nlp_results=None):
     # Load NLP results if not provided
     if nlp_results is None:
         articles = parse_articles('articles.md')
-        if args.article:
+        if args.article and len(articles) > 1:
             articles = [articles[args.article - 1]]
 
         config = {'stanford_corenlp': {'path': './stanford-corenlp-4.5.5', 'memory': '4g'}}
@@ -389,7 +389,8 @@ def run_all_stages(args):
     nlp_results = []
     for i, article in enumerate(articles, 1):
         # Need to wrap in args object simulation
-        article_args = argparse.Namespace(article=i if args.article else None, verbose=args.verbose)
+        # Always use i as the article number when processing all articles
+        article_args = argparse.Namespace(article=i, verbose=args.verbose)
         result = stage2_nlp_pipeline(article_args, [article])
         nlp_results.append((result[0], article))
 

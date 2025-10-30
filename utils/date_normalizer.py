@@ -59,7 +59,17 @@ class DateNormalizer:
 
         parsed_date = dateparser.parse(date_text, settings=settings)
 
-        if parsed_date:
+        if parsed_date and ref_datetime:
+            # CRITICAL FIX: If parsed date is in the past and matches the reference date's day of week,
+            # it's likely the same day (e.g., "Friday" on Friday March 15 should be March 15, not previous Friday)
+            if parsed_date < ref_datetime and parsed_date.weekday() == ref_datetime.weekday():
+                # Check if it's a simple day-of-week reference (no other date info)
+                simple_day_refs = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
+                if any(day in date_text.lower() for day in simple_day_refs) and len(date_text.split()) <= 2:
+                    # Use reference date instead (same day)
+                    return ref_datetime.strftime('%Y-%m-%d')
+            return parsed_date.strftime('%Y-%m-%d')
+        elif parsed_date:
             return parsed_date.strftime('%Y-%m-%d')
 
         # If dateparser failed, try manual parsing for common patterns
@@ -88,8 +98,9 @@ class DateNormalizer:
                 # Find the most recent occurrence of this day
                 days_back = (reference_date.weekday() - day_num) % 7
                 if days_back == 0:
-                    # If same day, assume it was last week (news articles usually report past events)
-                    days_back = 7
+                    # If same day as reference date, use reference date itself
+                    # (e.g., article published Friday, event happened "Friday" = same day)
+                    return reference_date.strftime('%Y-%m-%d')
                 target_date = reference_date - timedelta(days=days_back)
                 return target_date.strftime('%Y-%m-%d')
 

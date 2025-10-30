@@ -174,7 +174,7 @@ class FiveW1HExtractor:
             extraction['what'] = self._extract_what(trigger, sentence_annotation)
             extraction['who'] = self._extract_who(trigger, sentence_annotation, article_text, article_annotation)
             extraction['whom'] = self._extract_whom(trigger, sentence_annotation)
-            extraction['where'] = self._extract_where(sentence_annotation)
+            extraction['where'] = self._extract_where(sentence_annotation, extraction.get('who'), extraction.get('whom'))
             extraction['when'] = self._extract_when(sentence_annotation, article_date)
             extraction['how'] = self._extract_how(trigger, sentence_annotation)
 
@@ -513,9 +513,11 @@ class FiveW1HExtractor:
             r'^((?:Three|Four|Five|Six|Seven|Eight|Nine|Ten|A|An)\s+[^,\.]+?(?:officers?|police|gunmen|gang|group|militants?|soldiers?|fighters?|bombers?|attackers?))',
             r'^([A-Z][a-z]+\s+(?:officers?|police|gunmen|gang|group|militants?|soldiers?|fighters?|bombers?|attackers?))',
             r'((?:police|military|security)\s+(?:officers?|forces?|personnel))',
-            r'(armed\s+gang)',
+            r'((?:\w+\s+)?armed\s+gang)',  # Matches "armed gang", "heavily armed gang", etc.
             r'(suicide\s+bomber)',
-            r'([A-Z][a-z]+\s+community)',  # For ethnic communities
+            # Ethnic groups with occupations or "community"
+            r'((?:Hema|Lendu|Hutu|Tutsi|Fulani|Hausa|Yoruba|Igbo|Nuer|Dinka|Shona|Ndebele|Zulu|Xhosa)\s+(?:herders?|farmers?|pastoralists?|community|communities|people|members?|fighters?))',
+            r'([A-Z][a-z]+\s+(?:herders?|farmers?|pastoralists?|community|communities))',  # General pattern for any ethnic group
         ]
 
         for pattern in patterns:
@@ -637,25 +639,52 @@ class FiveW1HExtractor:
 
         return None
     
-    def _extract_where(self, sent_ann: Dict) -> Optional[Dict]:
+    def _extract_where(self, sent_ann: Dict, actor: Optional[Dict] = None, victim: Optional[Dict] = None) -> Optional[Dict]:
         """
         Extract location (Where it happened).
-        
+
         Strategy: Find LOCATION entities and location prepositions
+
+        Args:
+            sent_ann: Sentence annotation
+            actor: Actor dict (to exclude actor names from locations)
+            victim: Victim dict (to exclude victim names from locations)
         """
         entities = sent_ann.get('entities', [])
         tokens = sent_ann.get('tokens', [])
-        
-        # Find location entities
-        locations = [e for e in entities if e.get('type') == 'LOCATION']
-        
+
+        # Get actor and victim names to exclude from location candidates
+        actor_name = actor.get('text', '').lower() if actor else ''
+        victim_name = victim.get('text', '').lower() if victim else ''
+        exclude_names = {actor_name, victim_name} - {''}  # Remove empty strings
+
+        # Find location entities, excluding actor/victim names
+        locations = []
+        for e in entities:
+            if e.get('type') == 'LOCATION':
+                location_text = e.get('text', '').lower()
+                # Exclude if it matches any of the actor/victim names
+                if not any(location_text in name or name in location_text for name in exclude_names):
+                    locations.append(e)
+
         if locations:
-            # Prefer more specific locations
+            # Prefer locations with AfricanNER metadata (more reliable)
+            # Then prefer CITY/COUNTRY over generic LOCATION
+            for location in locations:
+                metadata = location.get('metadata', {})
+                loc_type = metadata.get('type', 'UNKNOWN')
+                if loc_type in ['CITY', 'COUNTRY', 'REGION']:
+                    return {
+                        'text': location['text'],
+                        'type': loc_type,
+                        'country': metadata.get('country'),
+                        'coordinates': None  # Would need geocoding
+                    }
+
+            # Fallback: use first location
             location = locations[0]
-            
-            # Check if we have metadata from AfricanNER
             metadata = location.get('metadata', {})
-            
+
             return {
                 'text': location['text'],
                 'type': metadata.get('type', 'UNKNOWN'),
@@ -913,9 +942,9 @@ class FiveW1HExtractor:
         casualties = {'deaths': None, 'injuries': None}
         text_lower = text.lower()
 
-        # CRITICAL FIX: Exclude ages (e.g., "22-year-old") from casualty extraction
-        # Remove age patterns before extracting casualties
-        age_pattern = r'\d+-year-old'
+        # CRITICAL FIX: Exclude ages (e.g., "22-year-old" or "22 - year - old") from casualty extraction
+        # Remove age patterns before extracting casualties (handle both with and without spaces)
+        age_pattern = r'\d+\s*-\s*year\s*-\s*old'
         text_lower_no_ages = re.sub(age_pattern, 'PERSON', text_lower)
 
         # Enhanced death patterns - now work on text without ages
@@ -995,6 +1024,61 @@ class FiveW1HExtractor:
             except (ValueError, IndexError):
                 pass
 
+        # CRITICAL FIX: If no death count found, check for named victim patterns
+        # Patterns like "death of John Doe" or "killed Jane Smith" should infer deaths=1
+        if casualties['deaths'] is None:
+            # Create age-removed version of original text (preserve case for proper name detection)
+            text_no_ages = re.sub(age_pattern, 'PERSON', text)
+
+            # Check for patterns with named victims (capitalized words indicating proper names)
+            named_death_patterns = [
+                # After age removal, check for "death of PERSON ..." or "killed PERSON ..."
+                r'(?:death|killing)\s+of\s+(?:the\s+)?PERSON\s+\w+',  # death of PERSON [role]
+                r'(?:killed|killing)\s+PERSON\s+\w+',  # killed PERSON [role]
+                r'(?:shot|firing)\s+and\s+killed\s+PERSON',  # shot and killed PERSON
+                # Also check for direct proper name patterns (without age removal)
+                r'(?:death|killing)\s+of\s+(?:the\s+)?(?:\w+\s+)?([A-Z][a-z]+\s+[A-Z][a-z]+)',  # death of [role] John Doe
+                r'(?:killed|killing)\s+(?:\w+\s+)?([A-Z][a-z]+\s+[A-Z][a-z]+)',  # killed [role] John Doe
+                r'shot\s+and\s+killed\s+(?:\w+\s+)?([A-Z][a-z]+\s+[A-Z][a-z]+)',  # shot and killed [role] John Doe
+            ]
+
+            # Check age-removed text for PERSON patterns
+            for pattern in named_death_patterns[:3]:
+                match = re.search(pattern, text_no_ages)
+                if match:
+                    casualties['deaths'] = 1
+                    break
+
+            # If not found, check original text for proper name patterns
+            if casualties['deaths'] is None:
+                for pattern in named_death_patterns[3:]:
+                    match = re.search(pattern, text)
+                    if match:
+                        casualties['deaths'] = 1
+                        break
+
+        # Similar check for injuries with named victims
+        if casualties['injuries'] is None:
+            # Check for "injuring [number] others" pattern that might have been missed
+            others_injured = r'injuring\s+([a-z]+)\s+others'
+            match = re.search(others_injured, text_lower_no_ages)
+            if match:
+                # Try to convert word to number (four → 4, etc.)
+                word = match.group(1)
+                word_to_num = {
+                    'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+                    'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10,
+                    'eleven': 11, 'twelve': 12, 'fifteen': 15, 'twenty': 20
+                }
+                if word in word_to_num:
+                    casualties['injuries'] = word_to_num[word]
+
+            # Check for "injuring a [person/role]" pattern → infer 1 injury
+            if casualties['injuries'] is None:
+                single_injured = r'injuring\s+(?:a|an)\s+\w+'
+                if re.search(single_injured, text_lower_no_ages):
+                    casualties['injuries'] = 1
+
         return casualties
 
     def _extract_noun_phrase(self, head_idx: int, dependencies: List[Dict],
@@ -1070,18 +1154,31 @@ class FiveW1HExtractor:
                     pass
         
         return casualties
-    
+
     def _classify_victim_type(self, victim_text: str) -> str:
         """Classify victim type."""
+        if not victim_text:
+            return 'unknown'
+
         text_lower = victim_text.lower()
-        
-        civilian_indicators = {'civilian', 'people', 'resident', 'villager', 'child', 'woman'}
-        combatant_indicators = {'soldier', 'troop', 'military', 'police', 'fighter'}
-        
-        if any(ind in text_lower for ind in civilian_indicators):
-            return 'civilian'
-        elif any(ind in text_lower for ind in combatant_indicators):
+
+        # Expanded civilian indicators to include common victim descriptions
+        civilian_indicators = {
+            'civilian', 'people', 'resident', 'villager', 'child', 'woman', 'man',
+            'casualt', 'victim', 'student', 'customer', 'vendor', 'shopper',
+            'passenger', 'worker', 'employee', 'guard', 'bystander', 'protester',
+            'demonstrator', 'supporter', 'citizen'
+        }
+        combatant_indicators = {
+            'soldier', 'troop', 'military', 'police', 'fighter', 'officer',
+            'security force', 'armed force', 'combatant'
+        }
+
+        # Check combatants first (more specific)
+        if any(ind in text_lower for ind in combatant_indicators):
             return 'combatant'
+        elif any(ind in text_lower for ind in civilian_indicators):
+            return 'civilian'
         else:
             return 'unknown'
     
@@ -1223,8 +1320,17 @@ class EventExtractor:
                 events.append(event)
 
         # First pass: Detect and split reciprocal violence events
-        events = self._detect_reciprocal_violence(events, sentences)
+        events = self._detect_reciprocal_violence(events, sentences, article_text)
         self.logger.debug(f"After reciprocal violence detection: {len(events)} events")
+
+        # Re-classify taxonomy for events modified by reciprocal violence detection
+        if self.taxonomy_classifier:
+            for event in events:
+                if event.get('reciprocal_violence'):
+                    taxonomy_l1, taxonomy_l2, taxonomy_l3 = self.taxonomy_classifier.classify(event)
+                    event['taxonomy_l1'] = taxonomy_l1
+                    event['taxonomy_l2'] = taxonomy_l2
+                    event['taxonomy_l3'] = taxonomy_l3
 
         # Second pass: Merge events within same/adjacent sentences
         events = self._merge_similar_events(events)
@@ -1285,7 +1391,116 @@ class EventExtractor:
         # Ensure score is between 0 and 1
         return round(min(score, 1.0), 2)
 
-    def _detect_reciprocal_violence(self, events: List[Dict], sentences: List[Dict]) -> List[Dict]:
+    def _infer_actor_type_from_text(self, actor_text: str) -> str:
+        """
+        Infer actor type from actor text for reciprocal violence events.
+
+        Args:
+            actor_text: Actor name/description
+
+        Returns:
+            Actor type: 'state', 'criminal', 'communal', etc.
+        """
+        if not actor_text:
+            return 'communal'
+
+        text_lower = actor_text.lower()
+
+        # State actors
+        state_indicators = ['police', 'military', 'soldier', 'officer', 'security force', 'armed force', 'government']
+        if any(ind in text_lower for ind in state_indicators):
+            return 'state'
+
+        # Criminal actors
+        criminal_indicators = ['gang', 'robber', 'bandit', 'criminal', 'thief']
+        if any(ind in text_lower for ind in criminal_indicators):
+            return 'criminal'
+
+        # Political/opposition actors
+        political_indicators = ['opposition', 'protester', 'demonstrator', 'supporter']
+        if any(ind in text_lower for ind in political_indicators):
+            return 'communal'  # Opposition groups in clashes are treated as communal
+
+        # Ethnic/tribal communities
+        ethnic_indicators = ['community', 'communities', 'ethnic', 'tribal']
+        if any(ind in text_lower for ind in ethnic_indicators):
+            return 'communal'
+
+        # Default to communal for inter-group violence
+        return 'communal'
+
+    def _extract_side_specific_casualties(self, article_text: str, actor1: str, actor2: str) -> Dict:
+        """
+        Extract side-specific casualties for reciprocal violence.
+
+        Patterns:
+        - "8 Hema and 4 Lendu community members were killed"
+        - "47 injured, including 12 police officers"
+
+        Args:
+            article_text: Full article text
+            actor1: First actor name
+            actor2: Second actor name
+
+        Returns:
+            Dict with casualties for each side: {'actor1_deaths': X, 'actor1_injuries': Y, ...}
+        """
+        import re
+
+        result = {
+            'actor1_deaths': None,
+            'actor1_injuries': None,
+            'actor2_deaths': None,
+            'actor2_injuries': None
+        }
+
+        # Normalize actor names for matching (remove "community", case-insensitive)
+        actor1_base = re.sub(r'\s+(?:community|communities|herders?|farmers?|supporters?|forces?|officers?)', '', actor1, flags=re.IGNORECASE).strip()
+        actor2_base = re.sub(r'\s+(?:community|communities|herders?|farmers?|supporters?|forces?|officers?)', '', actor2, flags=re.IGNORECASE).strip()
+
+        # Pattern 1: "X Actor1 and Y Actor2 (community members) were killed/died"
+        pattern1 = rf'(\d+)\s+{re.escape(actor1_base)}\s+and\s+(\d+)\s+{re.escape(actor2_base)}\s+(?:\w+\s+)*(?:were\s+)?(?:killed|died|dead)'
+        match = re.search(pattern1, article_text, re.IGNORECASE)
+        if match:
+            # Actor1 deaths are actually victims of Actor2, and vice versa
+            result['actor2_deaths'] = int(match.group(1))  # Actor1 killed → Actor2 did the killing
+            result['actor1_deaths'] = int(match.group(2))  # Actor2 killed → Actor1 did the killing
+            return result
+
+        # Pattern 2: "Y Actor2 and X Actor1 (community members) were killed/died" (reversed order)
+        pattern2 = rf'(\d+)\s+{re.escape(actor2_base)}\s+and\s+(\d+)\s+{re.escape(actor1_base)}\s+(?:\w+\s+)*(?:were\s+)?(?:killed|died|dead)'
+        match = re.search(pattern2, article_text, re.IGNORECASE)
+        if match:
+            result['actor1_deaths'] = int(match.group(1))  # Actor2 killed → Actor1 did the killing
+            result['actor2_deaths'] = int(match.group(2))  # Actor1 killed → Actor2 did the killing
+            return result
+
+        # Pattern 3: "X dead and Y injured, including Z actor2/police" (for state vs civilian conflicts)
+        pattern3 = r'(\d+)\s+(?:people\s+)?dead\s+and\s+(\d+)\s+injured\s*,\s*including\s+(\d+)\s+(?:police|officers?)'
+        match = re.search(pattern3, article_text, re.IGNORECASE)
+        if match and ('police' in actor2.lower() or 'security' in actor2.lower() or 'officers' in actor2.lower()):
+            total_deaths = int(match.group(1))
+            total_injuries = int(match.group(2))
+            actor2_injuries = int(match.group(3))  # Police injured
+            actor1_injuries = total_injuries - actor2_injuries  # Civilians injured
+
+            # Check who caused the deaths (look for "police used live ammunition" etc.)
+            if re.search(r'(?:police|security\s+forces?|officers?)\s+(?:used|fired)\s+(?:live\s+ammunition|guns?|weapons?)', article_text, re.IGNORECASE):
+                # Police caused deaths
+                result['actor1_deaths'] = total_deaths  # Civilians killed by police
+                result['actor2_deaths'] = 0
+            else:
+                # Assume civilians caused deaths
+                result['actor2_deaths'] = total_deaths
+                result['actor1_deaths'] = 0
+
+            result['actor1_injuries'] = actor1_injuries
+            result['actor2_injuries'] = actor2_injuries
+            return result
+
+        return result
+
+    def _detect_reciprocal_violence(self, events: List[Dict], sentences: List[Dict], article_text: str = '') -> List[Dict]:
         """
         Detect and split reciprocal violence events.
 
@@ -1296,6 +1511,7 @@ class EventExtractor:
         Args:
             events: List of extracted events
             sentences: Article sentences
+            article_text: Full article text for extracting side-specific casualties
 
         Returns:
             Expanded event list with reciprocal violence split
@@ -1318,13 +1534,20 @@ class EventExtractor:
             # Check if this is a reciprocal violence pattern
             # Note: Use (.+?) to match "any text" not [^and] which means "any char except a, n, d"
             reciprocal_patterns = [
-                r'between\s+(.+?)\s+and\s+(.+?)(?:\s+in|\s+communities|\s+have|,)',
-                r'clash(?:es)?\s+between\s+(.+?)\s+and\s+(.+?)(?:\s+in|\s+communities|,)',
-                r'violence\s+between\s+(.+?)\s+and\s+(.+?)(?:\s+in|\s+communities|,)',
-                r'fight(?:ing)?\s+between\s+(.+?)\s+and\s+(.+?)(?:\s+in|\s+communities|,)',
-                r'conflict\s+between\s+(.+?)\s+and\s+(.+?)(?:\s+in|\s+communities|,)',
+                # General "between X and Y" patterns
+                r'between\s+(.+?)\s+and\s+(.+?)(?:\s+in|\s+communities|\s+have|\s+has|,)',
+                r'clash(?:es)?\s+between\s+(.+?)\s+and\s+(.+?)(?:\s+in|\s+communities|\s+have|,)',
+                r'violence\s+between\s+(.+?)\s+and\s+(.+?)(?:\s+in|\s+communities|\s+have|,)',
+                r'fight(?:ing)?\s+between\s+(.+?)\s+and\s+(.+?)(?:\s+in|\s+communities|\s+have|,)',
+                r'conflict\s+between\s+(.+?)\s+and\s+(.+?)(?:\s+in|\s+communities|\s+have|,)',
+                # "X and Y clashed/fought" patterns
                 r'([A-Z]\w+(?:\s+\w+)?)\s+(?:and|vs|versus)\s+([A-Z]\w+(?:\s+\w+)?)\s+clash(?:ed)?',
                 r'([A-Z]\w+(?:\s+\w+)?)\s+(?:and|vs|versus)\s+([A-Z]\w+(?:\s+\w+)?)\s+fought',
+                # Specific ethnic/communal conflict patterns
+                r'(\w+\s+(?:community|communities|herders?|farmers?|pastoralists?))\s+and\s+(\w+\s+(?:community|communities|herders?|farmers?|pastoralists?))',
+                r'when\s+(\w+\s+\w+)\s+accused\s+(\w+\s+\w+)',
+                # Specific patterns for ethnic groups (captures full phrases like "Hema herders", "Lendu farmers")
+                r'((?:Hema|Lendu|Hutu|Tutsi|Fulani|Hausa)\s+\w+)\s+and\s+((?:Hema|Lendu|Hutu|Tutsi|Fulani|Hausa)\s+\w+)',
             ]
 
             matched = False
@@ -1338,34 +1561,41 @@ class EventExtractor:
                     if self.fivew1h_extractor._is_likely_actor(actor1_text) and self.fivew1h_extractor._is_likely_actor(actor2_text):
                         # Create two events - one from each perspective
 
-                        # Event 1: Actor1 -> Actor2
+                        # Infer actor types based on text (not always communal)
+                        actor1_type = self._infer_actor_type_from_text(actor1_text)
+                        actor2_type = self._infer_actor_type_from_text(actor2_text)
+
+                        # Extract side-specific casualties from article text
+                        casualties = self._extract_side_specific_casualties(article_text, actor1_text, actor2_text)
+
+                        # Event 1: Actor1 -> Actor2 (Actor1 attacks Actor2)
                         event1 = event.copy()
                         event1['who'] = {
                             'text': actor1_text,
-                            'type': 'communal',  # Default for inter-community violence
+                            'type': actor1_type,
                             'metadata': {}
                         }
                         event1['whom'] = {
                             'text': actor2_text,
                             'type': 'civilian',
-                            'deaths': event.get('whom', {}).get('deaths'),
-                            'injuries': event.get('whom', {}).get('injuries')
+                            'deaths': casualties.get('actor1_deaths') or event.get('whom', {}).get('deaths'),
+                            'injuries': casualties.get('actor1_injuries') or event.get('whom', {}).get('injuries')
                         }
                         event1['reciprocal_violence'] = True
                         event1['reciprocal_pair'] = 1
 
-                        # Event 2: Actor2 -> Actor1
+                        # Event 2: Actor2 -> Actor1 (Actor2 attacks Actor1)
                         event2 = event.copy()
                         event2['who'] = {
                             'text': actor2_text,
-                            'type': 'communal',
+                            'type': actor2_type,
                             'metadata': {}
                         }
                         event2['whom'] = {
                             'text': actor1_text,
                             'type': 'civilian',
-                            'deaths': None,  # Casualties split between events
-                            'injuries': None
+                            'deaths': casualties.get('actor2_deaths'),
+                            'injuries': casualties.get('actor2_injuries')
                         }
                         event2['reciprocal_violence'] = True
                         event2['reciprocal_pair'] = 2

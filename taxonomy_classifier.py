@@ -109,18 +109,20 @@ class TaxonomyClassifier:
         actor_text = actor.get('text', '').lower() if actor else ''
         victim = event.get('whom', {}) if event.get('whom') else {}
         victim_type = victim.get('type', 'unknown') if victim else 'unknown'
+        victim_text = victim.get('text', '').lower() if victim else ''
         how = event.get('how', {}) if event.get('how') else {}
         weapons = how.get('weapons', []) if how else []
         tactics = how.get('tactics', []) if how else []
+        sentence_text = event.get('sentence_text', '').lower()
 
         # Level 1: Determine high-level category
         level1 = self._classify_level1(actor_type, actor_text, victim_type, trigger_lemma)
 
         # Level 2: Determine mid-level category
-        level2 = self._classify_level2(level1, actor_type, actor_text, weapons, tactics, trigger_lemma)
+        level2 = self._classify_level2(level1, actor_type, actor_text, weapons, tactics, trigger_lemma, sentence_text, victim_text)
 
         # Level 3: Determine specific type
-        level3 = self._classify_level3(level1, level2, weapons, tactics, trigger_lemma, actor_text)
+        level3 = self._classify_level3(level1, level2, weapons, tactics, trigger_lemma, actor_text, sentence_text)
 
         return level1, level2, level3
 
@@ -158,7 +160,8 @@ class TaxonomyClassifier:
         return 'Political Violence'
 
     def _classify_level2(self, level1: str, actor_type: str, actor_text: str,
-                        weapons: list, tactics: list, trigger: str) -> str:
+                        weapons: list, tactics: list, trigger: str,
+                        sentence_text: str = '', victim_text: str = '') -> str:
         """Classify Level 2 (mid-level category)."""
 
         if level1 == 'Political Violence':
@@ -169,24 +172,31 @@ class TaxonomyClassifier:
             if 'suicide' in tactics:
                 return 'Terrorism'
 
-            # Check for election violence
-            election_indicators = ['election', 'protest', 'opposition', 'demonstrator']
-            if any(ind in actor_text for ind in election_indicators):
+            # Check for election violence (also check sentence context)
+            election_indicators = ['election', 'protest', 'opposition', 'demonstrator', 'voting', 'poll']
+            if any(ind in actor_text or ind in sentence_text for ind in election_indicators):
                 return 'Election Violence'
 
             # Default to Insurgency
             return 'Insurgency'
 
         elif level1 == 'State Violence Against Civilians':
-            # Check for repression of protests
-            protest_indicators = ['protest', 'demonstrator', 'rally']
-            if any(ind in actor_text for ind in protest_indicators):
+            # Check for repression of protests (check victim text and sentence)
+            protest_indicators = ['protest', 'demonstrator', 'rally', 'opposition supporter']
+            if any(ind in victim_text or ind in sentence_text for ind in protest_indicators):
                 return 'State Repression of Protests'
 
             # Default to Extrajudicial Killings
             return 'Extrajudicial Killings'
 
         elif level1 == 'Communal Violence':
+            # Check for election-related communal violence first
+            election_indicators = ['election', 'voting', 'opposition', 'poll']
+            if any(ind in sentence_text for ind in election_indicators):
+                # If it's election-related communal violence, reclassify as Political Violence > Election Violence
+                # This is handled at Level 1 classification, so we keep it as communal here
+                pass
+
             # Check for ethnic conflict
             ethnic_indicators = ['community', 'ethnic', 'tribal', 'hema', 'lendu', 'hutu', 'tutsi']
             if any(ind in actor_text for ind in ethnic_indicators):
@@ -205,14 +215,14 @@ class TaxonomyClassifier:
             return 'Ethnic/Tribal Conflict'
 
         elif level1 == 'Criminal Violence':
-            # Check for armed robbery
-            robbery_indicators = ['rob', 'robbery', 'bank', 'stole', 'loot']
-            if any(ind in trigger or ind in actor_text for ind in robbery_indicators):
+            # Check for armed robbery (check sentence context too)
+            robbery_indicators = ['rob', 'robbery', 'bank', 'stole', 'loot', 'robbed']
+            if any(ind in trigger or ind in actor_text or ind in sentence_text for ind in robbery_indicators):
                 return 'Armed Robbery/Banditry'
 
             # Check for kidnapping
             kidnap_indicators = ['kidnap', 'abduct', 'hostage']
-            if any(ind in trigger for ind in kidnap_indicators):
+            if any(ind in trigger or ind in sentence_text for ind in kidnap_indicators):
                 return 'Kidnapping for Ransom'
 
             # Default to gang violence
@@ -221,7 +231,7 @@ class TaxonomyClassifier:
         return 'Unknown'
 
     def _classify_level3(self, level1: str, level2: str, weapons: list, tactics: list,
-                         trigger: str, actor_text: str) -> str:
+                         trigger: str, actor_text: str, sentence_text: str = '') -> str:
         """Classify Level 3 (specific type)."""
 
         # For Terrorism
@@ -240,9 +250,9 @@ class TaxonomyClassifier:
 
         # For Election Violence
         elif level2 == 'Election Violence':
-            if 'protest' in actor_text or 'demonstr' in actor_text:
+            if 'protest' in actor_text or 'demonstr' in actor_text or 'protest' in sentence_text:
                 return 'Protest Violence'
-            if 'poll' in actor_text or 'voting' in actor_text:
+            if 'poll' in actor_text or 'voting' in actor_text or 'poll' in sentence_text:
                 return 'Poll Violence'
             return 'Campaign Violence'
 
@@ -272,9 +282,9 @@ class TaxonomyClassifier:
 
         # For Armed Robbery
         elif level2 == 'Armed Robbery/Banditry':
-            if 'bank' in actor_text or 'bank' in trigger:
+            if 'bank' in actor_text or 'bank' in trigger or 'bank' in sentence_text:
                 return 'Bank Robbery'
-            if 'highway' in actor_text or 'road' in actor_text:
+            if 'highway' in actor_text or 'road' in actor_text or 'highway' in sentence_text:
                 return 'Highway Robbery'
             return 'Armed Robbery/Banditry'
 

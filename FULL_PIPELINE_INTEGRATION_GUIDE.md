@@ -82,7 +82,7 @@ python3 test_pipeline_stages.py --stage all --verbose
 python3 test_pipeline_stages.py --stage 1 --verbose  # Article parsing
 python3 test_pipeline_stages.py --stage 2 --verbose  # NLP annotation
 python3 test_pipeline_stages.py --stage 3 --verbose  # Event extraction
-python3 test_pipeline_stages.py --stage 5 --verbose  # CSV output
+python3 test_pipeline_stages.py --stage 4 --verbose  # CSV output
 ```
 
 ### 3. Check Results
@@ -144,7 +144,7 @@ Structured Article Object
     ├─ Resolve pronouns to entities ✓
     └─ Post-processing
     ↓
-[Stage 5: CSV Output]
+[Stage 4: CSV Output]
     ↓
 Final Events CSV
 ```
@@ -259,7 +259,7 @@ WHO: "Al-Shabaab" (from_coreference: true) ✓
 
 **Output:** JSON with extracted events
 
-### Stage 5: CSV Output
+### Stage 4: CSV Output
 
 **Purpose:** Convert events to CSV format
 
@@ -296,8 +296,8 @@ python3 test_pipeline_stages.py --stage 2 --article 1 --verbose
 # Stage 3: Event Extraction (benefits from server)
 python3 test_pipeline_stages.py --stage 3 --verbose
 
-# Stage 5: CSV Output
-python3 test_pipeline_stages.py --stage 5 --verbose
+# Stage 4: CSV Output
+python3 test_pipeline_stages.py --stage 4 --verbose
 ```
 
 ### Process Specific Article
@@ -562,7 +562,7 @@ sleep 2
 | **Stage 1 (Parsing)** | ~50ms | ~50ms |
 | **Stage 2 (NLP)** | ~500ms | ~2-3s |
 | **Stage 3 (Extraction)** | ~200ms | ~300ms |
-| **Stage 5 (CSV)** | ~10ms | ~10ms |
+| **Stage 4 (CSV)** | ~10ms | ~10ms |
 | **Total per article** | ~750ms | ~2.5-3.5s |
 | **Memory usage** | ~500MB | ~4-5GB |
 | **Actor extraction** | 4/7 (57%) | 6/7 (86%) |

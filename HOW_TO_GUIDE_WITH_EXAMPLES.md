@@ -117,7 +117,7 @@ python3 test_pipeline_stages.py --stage all --verbose
 ✓ Total events extracted: 7
 ✓ Saved to: output/stage3_extracted_events.json
 
-[Stage 5] CSV Output
+[Stage 4] CSV Output
 ✓ Generated CSV with 7 events
 ✓ Saved to: output/test_extracted_events.csv
 
@@ -665,14 +665,14 @@ Event Quality:
 
 ---
 
-### STAGE 5: CSV Output
+### STAGE 4: CSV Output
 
 **Purpose:** Convert JSON events to CSV format for analysis
 
-#### Running Stage 5
+#### Running Stage 4
 
 ```bash
-python3 test_pipeline_stages.py --stage 5 --verbose
+python3 test_pipeline_stages.py --stage 4 --verbose
 ```
 
 #### Output
@@ -680,7 +680,7 @@ python3 test_pipeline_stages.py --stage 5 --verbose
 **Console:**
 ```
 ======================================================================
-  STAGE 5: CSV OUTPUT
+  STAGE 4: CSV OUTPUT
 ======================================================================
 
 Loading events from: output/stage3_extracted_events.json
@@ -1131,6 +1131,11 @@ List of events [
     reciprocal_violence: boolean
   }
 ]
+```
+
+**Stage 4 Output:**
+```
+CSV with 24 columns (flattened event data)
 ```
 
 ### Field Meanings
